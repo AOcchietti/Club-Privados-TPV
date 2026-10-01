@@ -1,0 +1,92 @@
+@import url('https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700;800&family=Manrope:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;700&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+    :root {
+        --background: 48 33% 97%;
+        --foreground: 222 47% 11%;
+        --card: 0 0% 100%;
+        --card-foreground: 222 47% 11%;
+        --popover: 0 0% 100%;
+        --popover-foreground: 222 47% 11%;
+        --primary: 45 93% 47%;
+        --primary-foreground: 26 55% 12%;
+        --secondary: 160 84% 39%;
+        --secondary-foreground: 0 0% 100%;
+        --muted: 48 20% 94%;
+        --muted-foreground: 215 16% 47%;
+        --accent: 160 84% 96%;
+        --accent-foreground: 164 86% 16%;
+        --destructive: 0 84% 60%;
+        --destructive-foreground: 0 0% 98%;
+        --border: 214 20% 90%;
+        --input: 214 20% 88%;
+        --ring: 45 93% 47%;
+        --radius: 0.75rem;
+    }
+}
+
+@layer base {
+    * {
+        @apply border-border;
+    }
+    body {
+        @apply bg-background text-foreground;
+        font-family: 'Manrope', system-ui, sans-serif;
+        -webkit-font-smoothing: antialiased;
+    }
+    h1, h2, h3, h4, .font-display {
+        font-family: 'Outfit', 'Manrope', sans-serif;
+    }
+    .font-mono-num {
+        font-family: 'JetBrains Mono', monospace;
+    }
+}
+
+@layer components {
+    .btn-primary {
+        @apply bg-amber-500 hover:bg-amber-600 active:bg-amber-700 text-slate-950 font-semibold px-4 py-2.5 rounded-xl transition-colors shadow-sm focus:ring-2 focus:ring-amber-400 focus:outline-none inline-flex items-center justify-center gap-2 disabled:opacity-50 disabled:pointer-events-none;
+    }
+    .btn-secondary {
+        @apply bg-emerald-600 hover:bg-emerald-700 text-white font-semibold px-4 py-2.5 rounded-xl transition-colors shadow-sm inline-flex items-center justify-center gap-2 disabled:opacity-50 disabled:pointer-events-none;
+    }
+    .btn-outline {
+        @apply border border-slate-300 bg-white hover:bg-slate-50 text-slate-700 font-medium px-4 py-2.5 rounded-xl transition-colors inline-flex items-center justify-center gap-2 disabled:opacity-50 disabled:pointer-events-none;
+    }
+    .pos-card {
+        @apply bg-white rounded-xl border border-amber-100 shadow-sm hover:shadow-md hover:border-amber-300 transition-shadow p-3 flex flex-col justify-between cursor-pointer select-none;
+    }
+    .badge-active {
+        @apply bg-emerald-100 text-emerald-800 border border-emerald-200 font-medium text-xs px-2.5 py-0.5 rounded-full inline-flex items-center;
+    }
+    .badge-inactive {
+        @apply bg-slate-100 text-slate-600 border border-slate-200 font-medium text-xs px-2.5 py-0.5 rounded-full inline-flex items-center;
+    }
+    .card-soft {
+        @apply bg-white rounded-2xl border border-slate-200/80 shadow-sm;
+    }
+}
+
+::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+}
+::-webkit-scrollbar-track {
+    background: transparent;
+}
+::-webkit-scrollbar-thumb {
+    background: #d6d3cd;
+    border-radius: 8px;
+}
+::-webkit-scrollbar-thumb:hover {
+    background: #b8b4ac;
+}
+
+@layer base {
+    [data-debug-wrapper="true"] {
+        display: contents !important;
+    }
+}
