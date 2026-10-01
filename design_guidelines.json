@@ -1,0 +1,194 @@
+{
+  "project_name": "Weed Lemon Social Club - POS & Management System",
+  "app_type": "dashboard / hybrid_fullstack POS",
+  "location": "Sevilla, España",
+  "language": "es-ES",
+  "theme_philosophy": {
+    "concept": "Lemon-Herbal Botanical Calm",
+    "description": "Un sistema TPV (Punto de Venta) y panel de gestión moderno, alegre, muy intuitivo y luminoso. Combina tonos de amarillo limón suave, verde salvia herbal, crema caluroso andaluz y acentos pastel dinámicos para ofrecer máxima rapidez operativa en pantalla táctil o escritorio sin fatiga visual.",
+    "archetype": "ORGANIC & PASTEL PLAYFUL",
+    "tone": "Tranquilo, fresco, alegre, profesional, transparente"
+  },
+  "colors": {
+    "palette": {
+      "primary_lemon": {
+        "main": "#EAB308",
+        "light": "#FEF08A",
+        "dark": "#854D0E",
+        "soft_bg": "#FEFCE8",
+        "hover": "#D97706"
+      },
+      "herbal_green": {
+        "main": "#10B981",
+        "light": "#D1FAE5",
+        "dark": "#065F46",
+        "soft_bg": "#ECFDF5",
+        "hover": "#059669"
+      },
+      "botanical_slate": {
+        "main": "#0F172A",
+        "muted": "#64748B",
+        "subtle": "#94A3B8"
+      },
+      "surfaces": {
+        "app_bg": "#F8FAFC",
+        "card_bg": "#FFFFFF",
+        "sidebar_bg": "#FAFAF9",
+        "pos_cart_bg": "#FEFCE8",
+        "border": "#E2E8F0"
+      },
+      "category_accents": {
+        "flower_indica": {
+          "bg": "#F3E8FF",
+          "text": "#6B21A8",
+          "border": "#E9D5FF"
+        },
+        "flower_sativa": {
+          "bg": "#FEF3C7",
+          "text": "#92400E",
+          "border": "#FDE68A"
+        },
+        "extracts": {
+          "bg": "#FFEDD5",
+          "text": "#9A3412",
+          "border": "#FED7AA"
+        },
+        "edibles": {
+          "bg": "#FCE7F3",
+          "text": "#9D174D",
+          "border": "#FBCFE8"
+        },
+        "accessories": {
+          "bg": "#E0F2FE",
+          "text": "#075985",
+          "border": "#BAE6FD"
+        }
+      },
+      "status": {
+        "success": "#10B981",
+        "warning": "#F59E0B",
+        "danger": "#EF4444",
+        "info": "#3B82F6"
+      }
+    },
+    "contrast_rules": "All text elements must strictly adhere to APCA/WCAG AA minimums (4.5:1 for standard body, 3:1 for large headers). Dark text #0F172A on pastel lemon or light surfaces. Primary actions must have high contrast hover/focus states."
+  },
+  "typography": {
+    "font_family_headings": "Outfit, Manrope, sans-serif",
+    "font_family_body": "Manrope, system-ui, sans-serif",
+    "font_family_mono": "JetBrains Mono, monospace",
+    "scale": {
+      "h1_hero_dashboard": "text-3xl sm:text-4xl font-bold tracking-tight text-slate-900",
+      "h2_section": "text-xl sm:text-2xl font-semibold text-slate-900",
+      "h3_widget": "text-lg font-medium text-slate-800",
+      "body": "text-sm sm:text-base leading-relaxed text-slate-700",
+      "small_label": "text-xs font-semibold uppercase tracking-wider text-slate-500",
+      "pos_price_large": "text-2xl sm:text-3xl font-extrabold text-amber-600 tracking-tight"
+    },
+    "anti_patterns": "DO NOT use Inter or Space Grotesk for main headers. DO NOT use text-8xl or text-9xl anywhere on a POS app."
+  },
+  "layout_and_spacing": {
+    "structure": "Sidebar Fixed Nav + Topbar Header + Main Fluid Content + Optional POS Cart Drawer/Panel",
+    "pos_grid_mode": "Grid mode B (High Density Dashboard / POS Catalog)",
+    "responsive_grid": "grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-3 sm:gap-4",
+    "padding_rules": "Containers with borders must use internal padding (p-4 to p-6) to prevent text collision.",
+    "touch_targets": "All POS touch buttons, item grid cards, and quick add buttons must have a minimum size of 44px x 44px (prefer py-3 px-4)."
+  },
+  "key_features_and_modules": {
+    "1_pos_terminal": {
+      "name": "Terminal TPV (Venta)",
+      "description": "Catálogo interactivo con barra de búsqueda rápida, filtros por categorías (Flores, Extractos, Comestibles, Parafernalia), selector de usuario/socio actual, carrito flotante o lateral con desglose de cantidades (g/uds), cálculo de total y ticket de dispensación."
+    },
+    "2_products_crud": {
+      "name": "Gestión de Productos y Variedades",
+      "description": "Tabla y vista de tarjetas con imágenes, THC/CBD %, stock en gramos/unidades, precio por gramo, categoría y estado (Activo/Inactivo) con diálogos de creación y edición."
+    },
+    "3_members_management": {
+      "name": "Gestión de Socios (Usuarios)",
+      "description": "Listado de socios registrados con número de socio, DNI, saldo disponible, rol (Admin, Cajero, Socio), estado de membresía (Activa, Expirada, Suspendida) y ficha del socio."
+    },
+    "4_cash_register": {
+      "name": "Caja y Arqueo (Control de Caja)",
+      "description": "Apertura y cierre de turno de caja, movimientos manuales (entradas y salidas de efectivo con motivo), desglose de ventas en efectivo/tarjeta y resumen diario."
+    },
+    "5_sales_history": {
+      "name": "Histórico de Ventas y Dispensaciones",
+      "description": "Registro cronológico filtrable por rango de fechas, cajero, socio o tipo de pago, con opción de reimprimir/ver ticket."
+    },
+    "6_activity_audit_log": {
+      "name": "Registro de Actividad / Auditoría",
+      "description": "Feed detallado de todas las operaciones realizadas en el sistema (inicios de sesión, cambios de precio, ajustes de stock, aperturas de caja)."
+    },
+    "7_dashboard": {
+      "name": "Panel de Control (Estadísticas)",
+      "description": "Métricas clave del día (Ventas totales €, gramos dispensados, nuevos socios, productos más populares) con gráficos limpios mediante Recharts o Lucide."
+    }
+  },
+  "component_guidelines": {
+    "framework": "Tailwind CSS + Shadcn UI primitives (JavaScript .jsx format)",
+    "pos_card": {
+      "style": "bg-white rounded-xl border border-amber-100 shadow-sm hover:shadow-md hover:border-amber-300 transition-all p-3 flex flex-col justify-between cursor-pointer group select-none",
+      "hover_effect": "transform -translate-y-0.5 ease-out duration-150"
+    },
+    "cart_drawer": {
+      "style": "bg-stone-900 text-white dark or bg-amber-50/90 text-slate-900 with backdrop-blur-md rounded-2xl p-5 border border-amber-200/50 shadow-xl"
+    },
+    "badges": {
+      "active": "bg-emerald-100 text-emerald-800 border-emerald-200 font-medium text-xs px-2.5 py-0.5 rounded-full",
+      "inactive": "bg-slate-100 text-slate-600 border-slate-200 font-medium text-xs px-2.5 py-0.5 rounded-full",
+      "admin_role": "bg-purple-100 text-purple-800 border-purple-200 font-medium text-xs px-2.5 py-0.5 rounded-full",
+      "cajero_role": "bg-amber-100 text-amber-800 border-amber-200 font-medium text-xs px-2.5 py-0.5 rounded-full"
+    },
+    "buttons": {
+      "primary": "bg-amber-500 hover:bg-amber-600 active:bg-amber-700 text-slate-950 font-semibold px-4 py-2.5 rounded-xl transition-colors shadow-sm focus:ring-2 focus:ring-amber-400 focus:outline-none",
+      "secondary": "bg-emerald-600 hover:bg-emerald-700 text-white font-semibold px-4 py-2.5 rounded-xl transition-colors shadow-sm",
+      "outline": "border border-slate-300 bg-white hover:bg-slate-50 text-slate-700 font-medium px-4 py-2.5 rounded-xl transition-colors"
+    },
+    "modals_and_dialogs": "Use Shadcn Dialog and Sheet with smooth backdrop blur. Ensure inputs have explicit labels and error states."
+  },
+  "iconography": {
+    "library": "lucide-react",
+    "common_icons": {
+      "pos": "ShoppingBag, ShoppingCart, Tag, Sparkles",
+      "products": "Package, Leaf, Flame, ShieldAlert, Award",
+      "users": "Users, UserCheck, Shield, KeyRound, IdentificationCard",
+      "caja": "Wallet, Banknote, DollarSign, ArrowUpRight, ArrowDownLeft, Lock",
+      "history": "History, Receipt, FileText, Calendar",
+      "audit": "Activity, Clock, AlertCircle, Eye",
+      "dashboard": "LayoutDashboard, TrendingUp, BarChart3, PieChart"
+    }
+  },
+  "image_urls": {
+    "lemon_fresh_bg": "https://images.pexels.com/photos/5966647/pexels-photo-5966647.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940",
+    "lemon_slice_decor": "https://images.unsplash.com/photo-1750796987114-dd409dab14e2?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjA1ODR8MHwxfHNlYXJjaHw0fHxsZW1vbiUyMGZyZXNoJTIwYm90YW5pY2FsJTIwZ3JlZW4lMjBwYXN0ZWx8ZW58MHx8fHwxNzkwMDA5MzEzfDA&ixlib=rb-4.1.0&q=85",
+    "botanical_pastel_flatlay": "https://images.pexels.com/photos/8167882/pexels-photo-8167882.jpeg?auto=compress&cs=tinysrgb&dpr=2&h=650&w=940",
+    "sample_product_avatars": [
+      "https://images.unsplash.com/photo-1580412092181-219a7b10e6ce?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjA1ODR8MHwxfHNlYXJjaHxfHxsZW1vbnxlbnwwfHx8fDE3OTAwMDkzMTN8MA&ixlib=rb-4.1.0&q=85",
+      "https://images.unsplash.com/photo-1581340752304-a781f821e8ce?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjA1ODR8MHwxfHNlYXJjaHwyfHxsZW1vbiUyMGZyZXNoJTIwYm90YW5pY2FsJTIwZ3JlZW4lMjBwYXN0ZWx8ZW58MHx8fHwxNzkwMDA5MzEzfDA&ixlib=rb-4.1.0&q=85"
+    ]
+  },
+  "testing_attributes": {
+    "rule": "All interactive and key informational elements MUST include a data-testid attribute in kebab-case format.",
+    "examples": [
+      "data-testid=\"nav-item-pos\"",
+      "data-testid=\"nav-item-productos\"",
+      "data-testid=\"nav-item-socios\"",
+      "data-testid=\"nav-item-caja\"",
+      "data-testid=\"pos-search-input\"",
+      "data-testid=\"pos-product-card-1\"",
+      "data-testid=\"pos-add-to-cart-btn-1\"",
+      "data-testid=\"cart-checkout-button\"",
+      "data-testid=\"cash-open-shift-btn\"",
+      "data-testid=\"user-role-badge\"",
+      "data-testid=\"sales-filter-date\""
+    ]
+  },
+  "instructions_to_main_agent": [
+    "Use standard React .jsx syntax for components.",
+    "Ensure UI is strictly in Spanish for authentic Weed Lemon Social Club Sevilla experience.",
+    "Ensure all buttons have proper hover, focus, active states, and data-testid attributes.",
+    "Maintain responsive layout: Sidebar collapsible on mobile (hamburger sheet), full height on desktop.",
+    "Use sonner for instant, cheerful notifications (e.g. 'Producto añadido al carrito', 'Caja abierta con éxito').",
+    "Make sure POS checkout flow calculates totals, discounts, and provides a clear printable/viewable ticket summary."
+  ]
+}
