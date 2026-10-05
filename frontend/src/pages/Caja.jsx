@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
-import api, { fmtEUR, fmtDateTime, apiError, fmtQty, downloadClosingPdf } from "@/lib/api";
+import api, { fmtEUR, fmtDateTime, apiError, fmtQty, closingPdfUrl } from "@/lib/api";
 import { useAuth } from "@/context/AuthContext";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from "@/components/ui/alert-dialog";
@@ -314,12 +314,11 @@ function ReviewStep({ session, stocktake, onFinalized }) {
     setSaving(true);
     try {
       const res = await api.post("/cash/closing/finalize");
-      toast.success("Turno cerrado definitivamente. Descargando el resumen en PDF…");
-      onFinalized();
-      downloadClosingPdf(res.data).catch(() => toast.error("No se pudo descargar el PDF; puedes bajarlo desde el histórico de turnos"));
+      toast.success("Turno cerrado. Ya puedes descargar el resumen en PDF.");
+      onFinalized(res.data);
     } catch (e) {
       toast.error(apiError(e));
-      onFinalized(true);
+      onFinalized(null);
     } finally {
       setSaving(false);
     }
@@ -417,17 +416,6 @@ function ReportDialog({ sessionId, open, onClose }) {
   }, [open, sessionId]);
 
   const s = report?.session;
-  const [downloading, setDownloading] = useState(false);
-  const download = async () => {
-    setDownloading(true);
-    try {
-      await downloadClosingPdf(s);
-    } catch (e) {
-      toast.error(apiError(e, "No se pudo generar el PDF"));
-    } finally {
-      setDownloading(false);
-    }
-  };
 
   return (
     <Dialog open={open} onOpenChange={onClose}>
@@ -444,10 +432,9 @@ function ReportDialog({ sessionId, open, onClose }) {
                 <p>Responsable: <b>{s.opened_by}</b> · abierto {fmtDateTime(s.opened_at)}</p>
                 <p>Cerrado por: <b>{s.closed_by}</b> · {fmtDateTime(s.closed_at)}{s.supervised ? " · con supervisión de administrador" : ""}</p>
               </div>
-              <button onClick={download} disabled={downloading} className="btn-outline py-2 text-xs shrink-0" data-testid="cash-report-pdf-btn">
-                {downloading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <FileText className="w-3.5 h-3.5" />}
-                Descargar PDF
-              </button>
+              <a href={closingPdfUrl(s.id)} target="_blank" rel="noreferrer" className="btn-outline py-2 text-xs shrink-0" data-testid="cash-report-pdf-btn">
+                <FileText className="w-3.5 h-3.5" /> Descargar PDF
+              </a>
             </div>
             {report.out_of_shift_sales?.length > 0 && (
               <div className="bg-sky-50 border border-sky-200 rounded-xl p-3.5" data-testid="report-out-of-shift">
@@ -493,6 +480,7 @@ export default function Caja() {
   const [reportId, setReportId] = useState(null);
   const [opening, setOpening] = useState(false);
   const [confirmingOpen, setConfirmingOpen] = useState(false);
+  const [lastClosed, setLastClosed] = useState(null);
 
   const load = async () => {
     try {
@@ -635,6 +623,17 @@ export default function Caja() {
           </div>
           <h2 className="font-display text-xl font-bold text-slate-900">No hay ningún turno abierto</h2>
           <p className="text-sm text-slate-500 mt-1">Abrir un turno exige contar el stock, igual que al cerrar.</p>
+          {lastClosed && (
+            <div className="max-w-md mx-auto mt-4 bg-amber-50 border border-amber-200 rounded-xl px-4 py-3 text-sm text-amber-900 flex items-center gap-3 text-left" data-testid="last-closed-banner">
+              <FileText className="w-5 h-5 shrink-0 text-amber-500" />
+              <p className="flex-1">
+                Turno de <b>{lastClosed.opened_by}</b> cerrado a las {fmtDateTime(lastClosed.closed_at)}.
+              </p>
+              <a href={closingPdfUrl(lastClosed.id)} target="_blank" rel="noreferrer" className="btn-primary py-2 text-xs shrink-0" data-testid="last-closed-pdf-btn">
+                Descargar PDF
+              </a>
+            </div>
+          )}
           {pendingOut.count > 0 && (
             <div className="max-w-md mx-auto mt-4 bg-sky-50 border border-sky-200 rounded-xl px-4 py-3 text-sm text-sky-800 flex items-center gap-3 text-left" data-testid="pending-out-of-shift-banner">
               <Hourglass className="w-5 h-5 shrink-0 text-sky-500" />
@@ -826,7 +825,7 @@ export default function Caja() {
           ) : (
             <div className="space-y-4">
               <button onClick={() => setStep(2)} className="btn-outline py-2 text-sm" data-testid="review-back-btn">Volver al recuento</button>
-              <ReviewStep session={session} stocktake={stocktake} onFinalized={() => load()} />
+              <ReviewStep session={session} stocktake={stocktake} onFinalized={(closed) => { if (closed?.id) setLastClosed(closed); load(); }} />
             </div>
           )}
         </div>
@@ -863,14 +862,17 @@ export default function Caja() {
                         {s.difference > 0 ? "+" : ""}{fmtEUR(s.difference || 0)}
                       </td>
                       <td className="py-2.5 text-right">
-                        <button
-                          onClick={(e) => { e.stopPropagation(); downloadClosingPdf(s).catch((err) => toast.error(apiError(err, "No se pudo generar el PDF"))); }}
+                        <a
+                          href={closingPdfUrl(s.id)}
+                          target="_blank"
+                          rel="noreferrer"
+                          onClick={(e) => e.stopPropagation()}
                           title="Descargar resumen en PDF"
                           data-testid={`cash-session-pdf-${s.id}`}
-                          className="p-1.5 rounded-lg text-slate-400 hover:text-amber-700 hover:bg-amber-50 transition-colors"
+                          className="inline-flex p-1.5 rounded-lg text-slate-400 hover:text-amber-700 hover:bg-amber-50 transition-colors"
                         >
                           <FileText className="w-4 h-4" />
-                        </button>
+                        </a>
                       </td>
                     </tr>
                   ))}

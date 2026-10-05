@@ -59,10 +59,10 @@ Frontend copiado tal cual de la preview de Emergent; backend reconstruido a part
 ## Implementado (05/10/2026, iteración 6)
 - El recuento manda: al confirmar la apertura y al cerrar el turno, lo contado pasa a ser el stock del sistema (movimiento de stock tipo `recuento`). Si se marca "contado = esperado", el stock no cambia.
 - Orden de secciones del recuento por palabras clave de la categoría (válido para cualquier club): flor/marihuana → hash/hachís → extracto → dry → polen → resto alfabético.
-- TPV: sin stock visible ni botones rápidos +5/+10/+20 Cr; tarjetas cuadradas (imagen + nombre + precio) en rejilla adaptable. Barra lateral más estrecha (w-56).
+- TPV: sin stock visible ni botones rápidos +5/+10/+20 Cr; tarjetas cuadradas (imagen + nombre + precio) en rejilla adaptable. Barra lateral de 192 px (w-48) y ticket de 320 px, con cada línea del ticket en dos filas (nombre arriba, modo y cantidad abajo).
 - Catálogo (Productos): solo productos activos, sin stock ni etiquetas de estado.
 - Gestión: filtros por categoría, inactivos siempre al final y atenuados (sin etiqueta "Activo"); el motivo es opcional en las entradas de stock (sigue siendo obligatorio en mermas y ajustes). El stock sigue visible aquí.
-- PDF con el resumen del cierre (`GET /cash/sessions/{id}/report.pdf`, admin o responsable del turno): turno, arqueo, ventas, productos vendidos, movimientos de caja y diferencias de los recuentos. Se descarga solo al cerrar y desde el histórico de turnos. Generado sin dependencias (`backend/cierre_pdf.py`).
+- PDF con el resumen del cierre (`GET /cash/sessions/{id}/report.pdf`, admin o responsable del turno): turno, arqueo, ventas, productos vendidos, movimientos de caja y diferencias de los recuentos. Se descarga con un enlace directo: aviso con botón al cerrar el turno, icono en cada fila del histórico y botón en el informe del turno. Generado sin dependencias (`backend/cierre_pdf.py`).
 
 ## Backlog priorizado
 - P0: nada bloqueante pendiente.

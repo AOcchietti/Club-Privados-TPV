@@ -249,7 +249,7 @@ export default function POS() {
         </div>
 
         {/* Carrito */}
-        <div className="w-full xl:w-[380px] xl:sticky xl:top-6 bg-white/90 backdrop-blur rounded-2xl border border-amber-200/70 shadow-xl p-5 space-y-4" data-testid="pos-cart">
+        <div className="w-full xl:w-[320px] xl:shrink-0 xl:sticky xl:top-6 bg-white/90 backdrop-blur rounded-2xl border border-amber-200/70 shadow-xl p-4 space-y-4" data-testid="pos-cart">
           <h2 className="font-display text-lg font-bold text-slate-900 flex items-center gap-2">
             <ShoppingCart className="w-5 h-5 text-amber-500" /> Ticket actual
           </h2>
@@ -321,14 +321,32 @@ export default function POS() {
                     className="bg-amber-50/70 border border-amber-100 rounded-xl px-3 py-2"
                     data-testid={`cart-item-${p.id}`}
                   >
-                    <div className="flex items-center gap-2">
+                    <div className="flex items-start gap-2">
                       <div className="flex-1 min-w-0">
                         <p className="text-sm font-semibold text-slate-800 truncate">{p.name}</p>
                         <p className="text-xs text-slate-400 font-mono-num">
                           {mode === "cr" ? `≈ ${qty} g` : `${fmtEUR(p.price)}/${p.unit}`}
+                          {mode === "g" && ` · ${fmtEUR(credits)}`}
                         </p>
                       </div>
-                      <div className="flex items-center gap-1">
+                      <button onClick={() => setCart((c) => { const n = { ...c }; delete n[p.id]; return n; })} className="text-slate-300 hover:text-red-500 mt-0.5" data-testid={`cart-remove-${p.id}`}>
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+                    </div>
+                    <div className="flex items-center gap-1 mt-1.5">
+                      {p.unit === "g" && ["g", "cr"].map((m) => (
+                        <button
+                          key={m}
+                          onClick={() => setCartMode((prev) => ({ ...prev, [p.id]: m }))}
+                          data-testid={`cart-mode-${m}-${p.id}`}
+                          className={`text-[10px] font-bold px-2 py-0.5 rounded-md border whitespace-nowrap transition-colors ${
+                            mode === m ? "bg-slate-900 text-white border-slate-900" : "bg-white text-slate-500 border-slate-200 hover:border-slate-400"
+                          }`}
+                        >
+                          {m === "g" ? "por gramos" : "por Cr"}
+                        </button>
+                      ))}
+                      <div className="flex items-center gap-1 ml-auto">
                         <button onClick={() => changeQty(p.id, -step)} className="w-7 h-7 rounded-lg bg-white border border-slate-200 flex items-center justify-center hover:bg-slate-50" data-testid={`cart-minus-${p.id}`}>
                           <Minus className="w-3.5 h-3.5" />
                         </button>
@@ -345,7 +363,7 @@ export default function POS() {
                             }}
                             onBlur={() => commitQtyDraft(p)}
                             data-testid={`cart-qty-input-${p.id}`}
-                            className="w-20 text-center text-sm font-bold font-mono-num bg-white border border-slate-200 rounded-lg py-1 pr-7 focus:outline-none focus:ring-2 focus:ring-amber-400"
+                            className="w-[72px] text-center text-sm font-bold font-mono-num bg-white border border-slate-200 rounded-lg py-1 pr-6 focus:outline-none focus:ring-2 focus:ring-amber-400"
                           />
                           <span className="absolute right-1.5 top-1/2 -translate-y-1/2 text-[10px] font-bold text-slate-400 pointer-events-none">
                             {mode === "cr" ? "Cr" : p.unit}
@@ -355,27 +373,7 @@ export default function POS() {
                           <Plus className="w-3.5 h-3.5" />
                         </button>
                       </div>
-                      <button onClick={() => setCart((c) => { const n = { ...c }; delete n[p.id]; return n; })} className="text-slate-300 hover:text-red-500" data-testid={`cart-remove-${p.id}`}>
-                        <Trash2 className="w-4 h-4" />
-                      </button>
                     </div>
-                    {p.unit === "g" && (
-                      <div className="flex gap-1 mt-1.5">
-                        {["g", "cr"].map((m) => (
-                          <button
-                            key={m}
-                            onClick={() => setCartMode((prev) => ({ ...prev, [p.id]: m }))}
-                            data-testid={`cart-mode-${m}-${p.id}`}
-                            className={`text-[10px] font-bold px-2 py-0.5 rounded-md border transition-colors ${
-                              mode === m ? "bg-slate-900 text-white border-slate-900" : "bg-white text-slate-500 border-slate-200 hover:border-slate-400"
-                            }`}
-                          >
-                            {m === "g" ? "por gramos" : "por Cr"}
-                          </button>
-                        ))}
-                        {mode === "g" && <span className="text-[10px] text-slate-400 ml-auto self-center font-mono-num">= {fmtEUR(credits)}</span>}
-                      </div>
-                    )}
                   </motion.div>
                 );
               })}

@@ -55,23 +55,9 @@ export async function uploadPhoto(file) {
 
 export const BACKEND = process.env.REACT_APP_BACKEND_URL;
 
-export async function downloadFile(url, filename) {
-  const res = await api.get(url, { responseType: "blob" });
-  const href = URL.createObjectURL(res.data);
-  const a = document.createElement("a");
-  a.href = href;
-  a.download = filename;
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  setTimeout(() => URL.revokeObjectURL(href), 1000);
-}
-
-export const closingPdfName = (session) =>
-  `cierre-turno-${(session?.closed_at || new Date().toISOString()).slice(0, 10)}.pdf`;
-
-export const downloadClosingPdf = (session) =>
-  downloadFile(`/cash/sessions/${session.id}/report.pdf`, closingPdfName(session));
+// Enlace directo al PDF del cierre: es una descarga normal del navegador (con la sesión por cookie).
+// Si algo falla, el motivo se ve en la pestaña que se abre.
+export const closingPdfUrl = (sessionId) => `${BACKEND}/api/cash/sessions/${sessionId}/report.pdf`;
 
 export const fileUrl = (path) => (path ? `${BACKEND}/api/files/${path}` : null);
 
