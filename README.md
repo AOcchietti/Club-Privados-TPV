@@ -13,7 +13,7 @@ inventario, alta pública de socios con QR, histórico y auditoría.
 
 | Programa | Versión | Notas |
 |---|---|---|
-| Python | 3.11 o 3.12 | En Windows marca "Add python.exe to PATH" al instalar |
+| Python | 3.12 o 3.13 | En Windows marca "Add python.exe to PATH" al instalar |
 | Node.js | 20 LTS o 22 | Trae `npm` y `corepack` |
 | Yarn 1 | 1.22 | `corepack enable` (o `npm install -g yarn`) |
 | MongoDB Community Server | 7 u 8 | Instálalo "como servicio" y queda escuchando en `mongodb://localhost:27017`. Alternativa sin instalar nada: un cluster gratis de MongoDB Atlas |
