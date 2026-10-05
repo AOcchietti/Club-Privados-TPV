@@ -2,12 +2,14 @@ from dotenv import load_dotenv
 load_dotenv()
 
 import io
+import mimetypes
 import os
 import re
 import logging
 import uuid
 import unicodedata
 from datetime import datetime, timezone, timedelta, date
+from pathlib import Path
 from typing import Optional, List
 from zoneinfo import ZoneInfo
 
@@ -62,9 +64,21 @@ def create_refresh_token(user_id: str) -> str:
     return jwt.encode(payload, os.environ["JWT_SECRET"], algorithm=JWT_ALGORITHM)
 
 
+# En producción (https) las cookies van Secure + SameSite=None. En local (http://localhost)
+# se pone COOKIE_SECURE=false en el .env y pasan a SameSite=Lax.
+COOKIE_SECURE = os.environ.get("COOKIE_SECURE", "true").strip().lower() not in ("false", "0", "no")
+COOKIE_SAMESITE = "none" if COOKIE_SECURE else "lax"
+
+
+def set_access_cookie(response: Response, access: str):
+    response.set_cookie("access_token", access, httponly=True, secure=COOKIE_SECURE, samesite=COOKIE_SAMESITE,
+                        max_age=60 * 60 * 8, path="/")
+
+
 def set_auth_cookies(response: Response, access: str, refresh: str):
-    response.set_cookie("access_token", access, httponly=True, secure=True, samesite="none", max_age=60 * 60 * 8, path="/")
-    response.set_cookie("refresh_token", refresh, httponly=True, secure=True, samesite="none", max_age=604800, path="/")
+    set_access_cookie(response, access)
+    response.set_cookie("refresh_token", refresh, httponly=True, secure=COOKIE_SECURE, samesite=COOKIE_SAMESITE,
+                        max_age=604800, path="/")
 
 
 def ser(doc):
@@ -201,7 +215,25 @@ def init_storage(force: bool = False):
     return storage_key
 
 
+# Sin EMERGENT_LLM_KEY (por ejemplo en local) los archivos se guardan en disco, en backend/uploads/
+# o en la carpeta indicada en LOCAL_STORAGE_DIR.
+STORAGE_MODE = "emergent" if (os.environ.get("EMERGENT_LLM_KEY") or "").strip() else "local"
+LOCAL_STORAGE_DIR = Path(os.environ.get("LOCAL_STORAGE_DIR") or Path(__file__).parent / "uploads").resolve()
+
+
+def local_path(path: str) -> Path:
+    target = (LOCAL_STORAGE_DIR / path).resolve()
+    if LOCAL_STORAGE_DIR not in target.parents:
+        raise HTTPException(status_code=400, detail="Ruta de archivo no válida")
+    return target
+
+
 def put_object(path: str, data: bytes, content_type: str) -> dict:
+    if STORAGE_MODE == "local":
+        target = local_path(path)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(data)
+        return {"path": path, "size": len(data)}
     key = init_storage()
     resp = requests.put(
         f"{STORAGE_URL}/objects/{path}",
@@ -212,6 +244,11 @@ def put_object(path: str, data: bytes, content_type: str) -> dict:
 
 
 def get_object(path: str):
+    if STORAGE_MODE == "local":
+        target = local_path(path)
+        if not target.is_file():
+            raise HTTPException(status_code=404, detail="Archivo no encontrado")
+        return target.read_bytes(), mimetypes.guess_type(target.name)[0] or "application/octet-stream"
     key = init_storage()
     resp = requests.get(f"{STORAGE_URL}/objects/{path}", headers={"X-Storage-Key": key}, timeout=60)
     resp.raise_for_status()
@@ -407,7 +444,7 @@ async def refresh(request: Request, response: Response):
     if not user:
         raise HTTPException(status_code=401, detail="Usuario no encontrado")
     access = create_access_token(str(user["_id"]), user["email"], user["role"])
-    response.set_cookie("access_token", access, httponly=True, secure=True, samesite="none", max_age=60 * 60 * 8, path="/")
+    set_access_cookie(response, access)
     return {"ok": True}
 
 
@@ -1681,6 +1718,9 @@ async def startup():
     except Exception as e:  # p. ej. dos turnos activos heredados: se avisa y se sigue arrancando
         logger.error("No se pudo crear el índice de turno único: %s", e)
 
+    if STORAGE_MODE == "local":
+        logger.info("Almacenamiento local de archivos en %s", LOCAL_STORAGE_DIR)
+        return
     try:
         init_storage()
         logger.info("Storage inicializado")
