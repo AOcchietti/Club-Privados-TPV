@@ -74,7 +74,14 @@ export default function Historico() {
                   className="border-b border-slate-100 hover:bg-amber-50/50 cursor-pointer transition-colors"
                   data-testid={`sale-row-${s.id}`}
                 >
-                  <td className="px-4 py-3 font-mono-num font-bold text-slate-900">{s.ticket_number}</td>
+                  <td className="px-4 py-3 font-mono-num font-bold text-slate-900">
+                    {s.ticket_number}
+                    {s.out_of_shift && (
+                      <span className="ml-2 inline-flex items-center text-[10px] font-bold px-1.5 py-0.5 rounded-md bg-sky-100 text-sky-700 border border-sky-200 align-middle" data-testid={`sale-out-of-shift-${s.id}`}>
+                        fuera de turno{s.out_of_shift_pending ? " · pendiente" : ""}
+                      </span>
+                    )}
+                  </td>
                   <td className="px-4 py-3 text-slate-600">{fmtDateTime(s.created_at)}</td>
                   <td className="px-4 py-3 text-slate-700 font-medium">{s.socio_name || <span className="text-slate-300">—</span>}</td>
                   <td className="px-4 py-3 text-slate-600">{s.cajero_name}</td>

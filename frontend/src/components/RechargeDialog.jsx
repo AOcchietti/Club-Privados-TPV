@@ -71,20 +71,9 @@ export default function RechargeDialog({ socio, open, onClose, onDone }) {
           data-testid="recharge-amount-input"
           className="w-full px-4 py-3 rounded-xl border border-slate-300 focus:outline-none focus:ring-2 focus:ring-emerald-400 font-mono-num font-bold text-lg text-center"
         />
-        <div className="flex gap-2">
-          {["efectivo", "tarjeta"].map((m) => (
-            <button
-              key={m}
-              onClick={() => setMethod(m)}
-              data-testid={`recharge-method-${m}`}
-              className={`flex-1 py-2.5 rounded-xl text-sm font-bold capitalize border flex items-center justify-center gap-1.5 transition-colors ${
-                method === m ? "bg-slate-900 text-white border-slate-900" : "bg-white text-slate-600 border-slate-200 hover:border-slate-400"
-              }`}
-            >
-              {m === "efectivo" ? <Banknote className="w-4 h-4" /> : <CreditCard className="w-4 h-4" />} {m}
-            </button>
-          ))}
-        </div>
+        <p className="text-xs text-slate-500 bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 flex items-center gap-2">
+          <Banknote className="w-4 h-4 text-emerald-600 shrink-0" /> Las recargas se hacen siempre en efectivo y entran en la caja del turno abierto.
+        </p>
         <div className="bg-emerald-50 border border-emerald-200 rounded-xl px-4 py-2.5 text-sm flex justify-between">
           <span className="text-emerald-800">Nuevo saldo</span>
           <span className="font-mono-num font-bold text-emerald-700" data-testid="recharge-new-balance">

@@ -14,7 +14,7 @@ const NAV = [
   { to: "/gestion", label: "Gestión", icon: ClipboardList, testid: "nav-item-gestion", roles: ["admin", "cajero"] },
   { to: "/usuarios", label: "Socios y equipo", icon: Users, testid: "nav-item-socios", roles: ["admin", "cajero"] },
   { to: "/panel", label: "Panel", icon: LayoutDashboard, testid: "nav-item-panel", roles: ["admin"] },
-  { to: "/caja", label: "Caja", icon: Wallet, testid: "nav-item-caja", roles: ["admin"] },
+  { to: "/caja", label: "Caja", icon: Wallet, testid: "nav-item-caja", roles: ["admin", "cajero"] },
   { to: "/historico", label: "Histórico", icon: History, testid: "nav-item-historico", roles: ["admin"] },
   { to: "/actividad", label: "Actividad", icon: Activity, testid: "nav-item-actividad", roles: ["admin"] },
 ];
@@ -22,7 +22,7 @@ const NAV = [
 function NavItems({ onNavigate }) {
   const { user } = useAuth();
   return (
-    <nav className="flex flex-col gap-1 px-3">
+    <nav className="flex flex-col gap-1 px-2">
       {NAV.filter((n) => n.roles.includes(user.role)).map((item) => (
         <NavLink
           key={item.to}
@@ -31,7 +31,7 @@ function NavItems({ onNavigate }) {
           onClick={onNavigate}
           data-testid={item.testid}
           className={({ isActive }) =>
-            `flex items-center gap-3 px-3.5 py-2.5 rounded-xl text-sm font-semibold transition-colors ${
+            `flex items-center gap-2 px-2.5 py-2.5 rounded-xl text-sm font-semibold whitespace-nowrap transition-colors ${
               isActive
                 ? "bg-amber-400/90 text-slate-950 shadow-sm"
                 : "text-slate-600 hover:bg-amber-100/70 hover:text-slate-900"
@@ -54,9 +54,9 @@ function UserCard() {
     navigate("/login");
   };
   return (
-    <div className="mt-auto px-3 pb-4">
-      <div className="card-soft p-3 flex items-center gap-3">
-        <div className="w-9 h-9 rounded-full bg-emerald-100 text-emerald-700 flex items-center justify-center font-bold text-sm">
+    <div className="mt-auto px-2 pb-4">
+      <div className="card-soft p-2 flex items-center gap-2">
+        <div className="w-8 h-8 shrink-0 rounded-full bg-emerald-100 text-emerald-700 flex items-center justify-center font-bold text-sm">
           {user.name?.charAt(0)?.toUpperCase()}
         </div>
         <div className="min-w-0 flex-1">
@@ -67,7 +67,7 @@ function UserCard() {
           onClick={handleLogout}
           data-testid="logout-button"
           title="Cerrar sesión"
-          className="p-2 rounded-lg text-slate-400 hover:text-red-500 hover:bg-red-50 transition-colors"
+          className="p-1.5 shrink-0 rounded-lg text-slate-400 hover:text-red-500 hover:bg-red-50 transition-colors"
         >
           <LogOut className="w-4 h-4" />
         </button>
@@ -79,13 +79,13 @@ function UserCard() {
 function SidebarContent({ onNavigate }) {
   return (
     <div className="flex flex-col h-full">
-      <div className="flex items-center gap-2.5 px-5 pt-6 pb-6">
-        <div className="w-10 h-10 rounded-2xl bg-amber-400 flex items-center justify-center shadow-sm">
-          <Citrus className="w-6 h-6 text-slate-950" />
+      <div className="flex items-center gap-2 px-3 pt-6 pb-6">
+        <div className="w-9 h-9 shrink-0 rounded-xl bg-amber-400 flex items-center justify-center shadow-sm">
+          <Citrus className="w-5 h-5 text-slate-950" />
         </div>
-        <div>
+        <div className="min-w-0">
           <p className="font-display font-bold text-slate-900 leading-tight">Weed Lemon</p>
-          <p className="text-[11px] text-slate-500 font-medium tracking-wide uppercase">Social Club · Sevilla</p>
+          <p className="text-[10px] text-slate-500 font-medium uppercase leading-tight">Social Club · Sevilla</p>
         </div>
       </div>
       <NavItems onNavigate={onNavigate} />
@@ -101,7 +101,7 @@ export default function Layout() {
   return (
     <div className="min-h-screen bg-[#FDFBF3]">
       {/* Sidebar escritorio */}
-      <aside className="hidden lg:flex fixed inset-y-0 left-0 w-64 flex-col bg-[#FAFAF7] border-r border-slate-200/70 z-30">
+      <aside className="hidden lg:flex fixed inset-y-0 left-0 w-48 flex-col bg-[#FAFAF7] border-r border-slate-200/70 z-30">
         <SidebarContent />
       </aside>
 
@@ -123,7 +123,7 @@ export default function Layout() {
         </div>
       </div>
 
-      <div className="lg:pl-64">
+      <div className="lg:pl-48">
         <motion.main
           key={location.pathname}
           initial={{ opacity: 0, y: 10 }}

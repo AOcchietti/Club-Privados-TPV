@@ -1,13 +1,12 @@
 import { useEffect, useMemo, useState } from "react";
-import { useSearchParams } from "react-router-dom";
+import { useSearchParams, Link } from "react-router-dom";
 import { motion, AnimatePresence } from "framer-motion";
 import { toast } from "sonner";
 import api, { fmtEUR, apiError, catLabel, catStyle } from "@/lib/api";
 import { useAuth } from "@/context/AuthContext";
 import TicketDialog from "@/components/TicketDialog";
 import RechargeDialog from "@/components/RechargeDialog";
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { Search, ShoppingCart, Trash2, Plus, Minus, UserRound, Wallet, X, Loader2, Coins } from "lucide-react";
+import { Search, ShoppingCart, Trash2, Plus, Minus, UserRound, Wallet, X, Loader2, Coins, Hourglass, Package } from "lucide-react";
 
 export default function POS() {
   const { user } = useAuth();
@@ -22,10 +21,9 @@ export default function POS() {
   const [socioQ, setSocioQ] = useState("");
   const [showSocioList, setShowSocioList] = useState(false);
   const [cash, setCash] = useState(null);
+  const [pendingOut, setPendingOut] = useState({ count: 0, total: 0 });
   const [checkingOut, setCheckingOut] = useState(false);
   const [lastSale, setLastSale] = useState(null);
-  const [openCashDialog, setOpenCashDialog] = useState(false);
-  const [startingAmount, setStartingAmount] = useState("100");
 
   const [searchParams] = useSearchParams();
   const [rechargeOpen, setRechargeOpen] = useState(false);
@@ -34,7 +32,10 @@ export default function POS() {
     api.get("/products", { params: { active_only: true } }).then((r) => setProducts(r.data)).catch(() => {});
     api.get("/categories").then((r) => setCategories(r.data)).catch(() => {});
     api.get("/users", { params: { role: "socio" } }).then((r) => setSocios(r.data)).catch(() => {});
-    api.get("/cash/current").then((r) => setCash(r.data.session)).catch(() => setCash(null));
+    api.get("/cash/current").then((r) => {
+      setCash(r.data.session);
+      setPendingOut(r.data.out_of_shift_pending || { count: 0, total: 0 });
+    }).catch(() => setCash(null));
   };
   useEffect(load, []);
 
@@ -85,16 +86,6 @@ export default function POS() {
     setCart((c) => ({ ...c, [p.id]: (c[p.id] || 0) + 1 }));
   };
 
-  const addCredits = (p, credits) => {
-    const grams = Math.round((credits / p.price) * 1000) / 1000;
-    if (p.stock < (cart[p.id] || 0) + grams) {
-      toast.warning(`Sin más stock de «${p.name}»`);
-      return;
-    }
-    setCart((c) => ({ ...c, [p.id]: Math.round(((c[p.id] || 0) + grams) * 1000) / 1000 }));
-    setCartMode((m) => ({ ...m, [p.id]: "cr" }));
-  };
-
   const changeQty = (id, delta) => {
     setCart((c) => {
       const next = { ...c };
@@ -143,23 +134,16 @@ export default function POS() {
         api.get(`/users/${socio.id}`).then((r) => setSocio(r.data)).catch(() => setSocio(null));
       }
       setSocioQ("");
-      toast.success(`Ticket ${res.data.ticket_number} · ${fmtEUR(res.data.total)}`);
+      toast.success(
+        res.data.out_of_shift
+          ? `Ticket ${res.data.ticket_number} · ${fmtEUR(res.data.total)} · FUERA DE TURNO: se incorporará a la próxima caja`
+          : `Ticket ${res.data.ticket_number} · ${fmtEUR(res.data.total)}`
+      );
       load();
     } catch (e) {
       toast.error(apiError(e, "No se pudo registrar la venta"));
     } finally {
       setCheckingOut(false);
-    }
-  };
-
-  const openCash = async () => {
-    try {
-      await api.post("/cash/open", { starting_amount: parseFloat(startingAmount) || 0 });
-      toast.success("Caja abierta con éxito");
-      setOpenCashDialog(false);
-      load();
-    } catch (e) {
-      toast.error(apiError(e));
     }
   };
 
@@ -171,13 +155,22 @@ export default function POS() {
           <p className="text-sm text-slate-500 mt-1">Toca un producto para añadirlo al ticket.</p>
         </div>
         {cash ? (
-          <span className="badge-active" data-testid="pos-cash-status">Caja abierta · fondo {fmtEUR(cash.starting_amount)}</span>
-        ) : user.role === "admin" ? (
-          <button onClick={() => setOpenCashDialog(true)} className="btn-outline text-amber-700 border-amber-300 bg-amber-50" data-testid="pos-open-cash-btn">
-            <Wallet className="w-4 h-4" /> Caja cerrada · Abrir
-          </button>
+          cash.status === "closing" ? (
+            <span className="badge-inactive" data-testid="pos-cash-status">Caja en proceso de cierre · ventas en pausa</span>
+          ) : cash.status === "opening" ? (
+            <span className="badge-inactive" data-testid="pos-cash-status">Caja en apertura (recuento de stock) · ventas en pausa</span>
+          ) : (
+            <span className="badge-active" data-testid="pos-cash-status">Caja abierta · fondo {fmtEUR(cash.starting_amount)}</span>
+          )
         ) : (
-          <span className="badge-inactive" data-testid="pos-cash-status">Caja cerrada</span>
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-bold bg-sky-100 text-sky-800 border border-sky-200" data-testid="pos-cash-status">
+              <Hourglass className="w-3.5 h-3.5" /> Sin turno abierto · las ventas quedan fuera de turno
+            </span>
+            <Link to="/caja" className="btn-outline text-amber-700 border-amber-300 bg-amber-50 py-1.5 text-xs" data-testid="pos-goto-cash-btn">
+              <Wallet className="w-3.5 h-3.5" /> Abrir turno en Caja
+            </Link>
+          </div>
         )}
       </div>
 
@@ -211,7 +204,7 @@ export default function POS() {
             ))}
           </div>
 
-          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
+          <div className="grid grid-cols-[repeat(auto-fill,minmax(150px,1fr))] gap-3" data-testid="pos-products-grid">
             {filtered.map((p) => {
               const out = p.stock <= 0;
               return (
@@ -222,42 +215,30 @@ export default function POS() {
                   onClick={() => !out && addToCart(p)}
                   role="button"
                   data-testid={`pos-product-card-${p.id}`}
-                  className={`pos-card text-left min-h-[110px] overflow-hidden ${out ? "opacity-45 cursor-not-allowed" : "hover:-translate-y-0.5"}`}
+                  className={`pos-card p-0 aspect-square justify-start overflow-hidden ${out ? "opacity-45 cursor-not-allowed" : "hover:-translate-y-0.5"}`}
                 >
-                  {p.image_url && (
-                    <div className="h-20 -mx-3 -mt-3 mb-2.5 overflow-hidden rounded-t-xl">
-                      <img src={p.image_url} alt={p.name} className="w-full h-full object-cover" loading="lazy" />
-                    </div>
-                  )}
-                  <div>
-                    <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full border ${catStyle(categories, p.category)}`}>
+                  <div className="relative flex-1 min-h-0 bg-gradient-to-br from-amber-50 to-emerald-50">
+                    {p.image_url ? (
+                      <img src={p.image_url} alt={p.name} className="absolute inset-0 w-full h-full object-cover" loading="lazy" />
+                    ) : (
+                      <div className="absolute inset-0 flex items-center justify-center">
+                        <Package className="w-8 h-8 text-amber-300" />
+                      </div>
+                    )}
+                    <span className={`absolute top-2 left-2 text-[10px] font-bold px-2 py-0.5 rounded-full border ${catStyle(categories, p.category)}`}>
                       {catLabel(categories, p.category)}
                     </span>
-                    <p className="font-display font-bold text-slate-900 mt-2 leading-tight">{p.name}</p>
-                    <p className="text-[11px] text-slate-400 mt-0.5">
-                      {p.thc ? `THC ${p.thc}% · ` : ""}stock {p.stock}{p.unit}
-                    </p>
+                    {out && <span className="absolute top-2 right-2 badge-inactive">Agotado</span>}
                   </div>
-                  <p className="font-display text-xl font-extrabold text-amber-600 mt-2">
-                    {fmtEUR(p.price)}<span className="text-xs font-semibold text-slate-400">/{p.unit}</span>
-                  </p>
-                  {p.unit === "g" && (
-                    <div className="mt-2 pt-2 border-t border-amber-100/80" onClick={(e) => e.stopPropagation()}>
-                      <p className="text-[10px] text-slate-400 mb-1.5">10 Cr ≈ {Math.round((10 / p.price) * 100) / 100} g</p>
-                      <div className="flex gap-1">
-                        {[5, 10, 20].map((cr) => (
-                          <button
-                            key={cr}
-                            onClick={(e) => { e.stopPropagation(); addCredits(p, cr); }}
-                            data-testid={`pos-quick-${cr}-${p.id}`}
-                            className="flex-1 text-[10px] font-bold py-1 rounded-md bg-amber-100 text-amber-800 hover:bg-amber-200 border border-amber-200 transition-colors"
-                          >
-                            +{cr} Cr
-                          </button>
-                        ))}
-                      </div>
+                  <div className="px-2.5 pt-2 pb-2.5 shrink-0">
+                    <p className="font-display font-bold text-sm text-slate-900 leading-tight line-clamp-2 min-h-[2.5em]">{p.name}</p>
+                    <div className="flex items-baseline justify-between gap-1 mt-1">
+                      <p className="font-display text-lg font-extrabold text-amber-600 leading-none whitespace-nowrap">
+                        {fmtEUR(p.price)}<span className="text-[11px] font-semibold text-slate-400">/{p.unit}</span>
+                      </p>
+                      {p.thc ? <span className="text-[10px] text-slate-400 whitespace-nowrap">THC {p.thc}%</span> : null}
                     </div>
-                  )}
+                  </div>
                 </motion.div>
               );
             })}
@@ -268,7 +249,7 @@ export default function POS() {
         </div>
 
         {/* Carrito */}
-        <div className="w-full xl:w-[380px] xl:sticky xl:top-6 bg-white/90 backdrop-blur rounded-2xl border border-amber-200/70 shadow-xl p-5 space-y-4" data-testid="pos-cart">
+        <div className="w-full xl:w-[320px] xl:shrink-0 xl:sticky xl:top-6 bg-white/90 backdrop-blur rounded-2xl border border-amber-200/70 shadow-xl p-4 space-y-4" data-testid="pos-cart">
           <h2 className="font-display text-lg font-bold text-slate-900 flex items-center gap-2">
             <ShoppingCart className="w-5 h-5 text-amber-500" /> Ticket actual
           </h2>
@@ -340,14 +321,32 @@ export default function POS() {
                     className="bg-amber-50/70 border border-amber-100 rounded-xl px-3 py-2"
                     data-testid={`cart-item-${p.id}`}
                   >
-                    <div className="flex items-center gap-2">
+                    <div className="flex items-start gap-2">
                       <div className="flex-1 min-w-0">
                         <p className="text-sm font-semibold text-slate-800 truncate">{p.name}</p>
                         <p className="text-xs text-slate-400 font-mono-num">
                           {mode === "cr" ? `≈ ${qty} g` : `${fmtEUR(p.price)}/${p.unit}`}
+                          {mode === "g" && ` · ${fmtEUR(credits)}`}
                         </p>
                       </div>
-                      <div className="flex items-center gap-1">
+                      <button onClick={() => setCart((c) => { const n = { ...c }; delete n[p.id]; return n; })} className="text-slate-300 hover:text-red-500 mt-0.5" data-testid={`cart-remove-${p.id}`}>
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+                    </div>
+                    <div className="flex items-center gap-1 mt-1.5">
+                      {p.unit === "g" && ["g", "cr"].map((m) => (
+                        <button
+                          key={m}
+                          onClick={() => setCartMode((prev) => ({ ...prev, [p.id]: m }))}
+                          data-testid={`cart-mode-${m}-${p.id}`}
+                          className={`text-[10px] font-bold px-2 py-0.5 rounded-md border whitespace-nowrap transition-colors ${
+                            mode === m ? "bg-slate-900 text-white border-slate-900" : "bg-white text-slate-500 border-slate-200 hover:border-slate-400"
+                          }`}
+                        >
+                          {m === "g" ? "por gramos" : "por Cr"}
+                        </button>
+                      ))}
+                      <div className="flex items-center gap-1 ml-auto">
                         <button onClick={() => changeQty(p.id, -step)} className="w-7 h-7 rounded-lg bg-white border border-slate-200 flex items-center justify-center hover:bg-slate-50" data-testid={`cart-minus-${p.id}`}>
                           <Minus className="w-3.5 h-3.5" />
                         </button>
@@ -364,7 +363,7 @@ export default function POS() {
                             }}
                             onBlur={() => commitQtyDraft(p)}
                             data-testid={`cart-qty-input-${p.id}`}
-                            className="w-20 text-center text-sm font-bold font-mono-num bg-white border border-slate-200 rounded-lg py-1 pr-7 focus:outline-none focus:ring-2 focus:ring-amber-400"
+                            className="w-[72px] text-center text-sm font-bold font-mono-num bg-white border border-slate-200 rounded-lg py-1 pr-6 focus:outline-none focus:ring-2 focus:ring-amber-400"
                           />
                           <span className="absolute right-1.5 top-1/2 -translate-y-1/2 text-[10px] font-bold text-slate-400 pointer-events-none">
                             {mode === "cr" ? "Cr" : p.unit}
@@ -374,27 +373,7 @@ export default function POS() {
                           <Plus className="w-3.5 h-3.5" />
                         </button>
                       </div>
-                      <button onClick={() => setCart((c) => { const n = { ...c }; delete n[p.id]; return n; })} className="text-slate-300 hover:text-red-500" data-testid={`cart-remove-${p.id}`}>
-                        <Trash2 className="w-4 h-4" />
-                      </button>
                     </div>
-                    {p.unit === "g" && (
-                      <div className="flex gap-1 mt-1.5">
-                        {["g", "cr"].map((m) => (
-                          <button
-                            key={m}
-                            onClick={() => setCartMode((prev) => ({ ...prev, [p.id]: m }))}
-                            data-testid={`cart-mode-${m}-${p.id}`}
-                            className={`text-[10px] font-bold px-2 py-0.5 rounded-md border transition-colors ${
-                              mode === m ? "bg-slate-900 text-white border-slate-900" : "bg-white text-slate-500 border-slate-200 hover:border-slate-400"
-                            }`}
-                          >
-                            {m === "g" ? "por gramos" : "por Cr"}
-                          </button>
-                        ))}
-                        {mode === "g" && <span className="text-[10px] text-slate-400 ml-auto self-center font-mono-num">= {fmtEUR(credits)}</span>}
-                      </div>
-                    )}
                   </motion.div>
                 );
               })}
@@ -427,6 +406,14 @@ export default function POS() {
             <span className="font-display text-3xl font-extrabold text-amber-600" data-testid="pos-cart-total">{fmtEUR(total)}</span>
           </div>
 
+          {!cash && (
+            <p className="text-xs text-sky-800 bg-sky-50 border border-sky-200 rounded-xl px-3 py-2 flex items-center gap-2" data-testid="pos-out-of-shift-note">
+              <Hourglass className="w-3.5 h-3.5 shrink-0" />
+              Venta fuera de turno: no se descuenta stock ahora; se incorporará a la próxima caja al abrirla.
+              {pendingOut.count > 0 && ` Ya hay ${pendingOut.count} pendientes (${fmtEUR(pendingOut.total)}).`}
+            </p>
+          )}
+
           <button
             onClick={checkout}
             disabled={cartItems.length === 0 || checkingOut || !socio}
@@ -441,24 +428,6 @@ export default function POS() {
 
       <TicketDialog sale={lastSale} open={!!lastSale} onClose={() => setLastSale(null)} />
       <RechargeDialog socio={socio} open={rechargeOpen} onClose={() => setRechargeOpen(false)} onDone={(u) => setSocio(u)} />
-
-      <Dialog open={openCashDialog} onOpenChange={setOpenCashDialog}>
-        <DialogContent className="max-w-xs">
-          <DialogHeader>
-            <DialogTitle className="font-display">Abrir caja</DialogTitle>
-          </DialogHeader>
-          <label className="text-xs font-semibold uppercase tracking-wider text-slate-500">Fondo inicial (créditos)</label>
-          <input
-            type="number"
-            min="0"
-            value={startingAmount}
-            onChange={(e) => setStartingAmount(e.target.value)}
-            data-testid="open-cash-amount-input"
-            className="w-full px-4 py-3 rounded-xl border border-slate-300 focus:outline-none focus:ring-2 focus:ring-amber-400"
-          />
-          <button onClick={openCash} className="btn-primary w-full" data-testid="cash-open-shift-btn">Abrir turno de caja</button>
-        </DialogContent>
-      </Dialog>
     </div>
   );
 }

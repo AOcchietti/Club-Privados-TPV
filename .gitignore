@@ -95,3 +95,6 @@ credentials.json
 *.key
 .credentials
 frontend/node_modules/.cache/default-development/0.pack
+
+# Archivos subidos en local (fotos, firmas, PDF legal)
+backend/uploads/

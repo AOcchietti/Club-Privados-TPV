@@ -44,11 +44,28 @@ export const catLabel = (cats, key) => cats.find((c) => c.key === key)?.label ||
 export const catStyle = (cats, key) =>
   CATEGORY_COLORS[cats.find((c) => c.key === key)?.color] || CATEGORY_COLORS.slate;
 
+export const fmtQty = (n) => Math.round((n ?? 0) * 1000) / 1000;
+
 export async function uploadPhoto(file) {
   const fd = new FormData();
   fd.append("file", file);
   const res = await api.post("/upload", fd, { headers: { "Content-Type": "multipart/form-data" } });
   return `${process.env.REACT_APP_BACKEND_URL}/api/files/${res.data.path}`;
+}
+
+export const BACKEND = process.env.REACT_APP_BACKEND_URL;
+
+// Enlace directo al PDF del cierre: es una descarga normal del navegador (con la sesión por cookie).
+// Si algo falla, el motivo se ve en la pestaña que se abre.
+export const closingPdfUrl = (sessionId) => `${BACKEND}/api/cash/sessions/${sessionId}/report.pdf`;
+
+export const fileUrl = (path) => (path ? `${BACKEND}/api/files/${path}` : null);
+
+export async function uploadPublicPhoto(file) {
+  const fd = new FormData();
+  fd.append("file", file);
+  const res = await api.post("/public/upload", fd, { headers: { "Content-Type": "multipart/form-data" } });
+  return res.data.path;
 }
 
 export const fmtDateTime = (iso) =>
