@@ -55,6 +55,24 @@ export async function uploadPhoto(file) {
 
 export const BACKEND = process.env.REACT_APP_BACKEND_URL;
 
+export async function downloadFile(url, filename) {
+  const res = await api.get(url, { responseType: "blob" });
+  const href = URL.createObjectURL(res.data);
+  const a = document.createElement("a");
+  a.href = href;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(href), 1000);
+}
+
+export const closingPdfName = (session) =>
+  `cierre-turno-${(session?.closed_at || new Date().toISOString()).slice(0, 10)}.pdf`;
+
+export const downloadClosingPdf = (session) =>
+  downloadFile(`/cash/sessions/${session.id}/report.pdf`, closingPdfName(session));
+
 export const fileUrl = (path) => (path ? `${BACKEND}/api/files/${path}` : null);
 
 export async function uploadPublicPhoto(file) {

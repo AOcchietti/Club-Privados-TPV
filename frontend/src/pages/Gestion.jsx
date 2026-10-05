@@ -264,8 +264,10 @@ function StockDialog({ product, open, onClose, onSaved }) {
         </label>
         <input type="number" min="0" step="any" value={qty} onChange={(e) => setQty(e.target.value)} data-testid="stock-qty-input"
           className="w-full px-4 py-3 rounded-xl border border-slate-300 font-mono-num font-bold text-center focus:outline-none focus:ring-2 focus:ring-amber-400" />
-        <label className="text-xs font-semibold uppercase tracking-wider text-slate-500">Motivo (obligatorio)</label>
-        <input value={reason} onChange={(e) => setReason(e.target.value)} placeholder="Ej: entrada de proveedor, producto dañado…" data-testid="stock-reason-input"
+        <label className="text-xs font-semibold uppercase tracking-wider text-slate-500">
+          {type === "entrada" ? "Motivo (opcional)" : "Motivo (obligatorio)"}
+        </label>
+        <input value={reason} onChange={(e) => setReason(e.target.value)} placeholder={type === "entrada" ? "Ej: entrada de proveedor" : "Ej: producto dañado, recuento…"} data-testid="stock-reason-input"
           className="w-full px-4 py-3 rounded-xl border border-slate-300 focus:outline-none focus:ring-2 focus:ring-amber-400" />
         {qty !== "" && (
           <div className="bg-slate-50 border border-slate-200 rounded-xl px-4 py-2.5 text-sm flex justify-between">
@@ -273,7 +275,7 @@ function StockDialog({ product, open, onClose, onSaved }) {
             <span className={`font-mono-num font-bold ${newStock < 0 ? "text-red-600" : "text-slate-900"}`} data-testid="stock-new-preview">{newStock}{product.unit}</span>
           </div>
         )}
-        <button onClick={save} disabled={saving || qty === "" || !reason.trim() || newStock < 0} className="btn-primary w-full" data-testid="stock-save-btn">
+        <button onClick={save} disabled={saving || qty === "" || (type !== "entrada" && !reason.trim()) || newStock < 0} className="btn-primary w-full" data-testid="stock-save-btn">
           {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : null}
           Registrar movimiento
         </button>
@@ -286,6 +288,7 @@ export default function Gestion() {
   const [products, setProducts] = useState([]);
   const [categories, setCategories] = useState([]);
   const [q, setQ] = useState("");
+  const [cat, setCat] = useState(null);
   const [view, setView] = useState("table");
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editing, setEditing] = useState(null);
@@ -329,7 +332,9 @@ export default function Gestion() {
     }
   };
 
-  const filtered = products.filter((p) => !q || p.name.toLowerCase().includes(q.toLowerCase()));
+  const filtered = products
+    .filter((p) => (!cat || p.category === cat) && (!q || p.name.toLowerCase().includes(q.toLowerCase())))
+    .sort((a, b) => (a.active === b.active ? 0 : a.active ? -1 : 1));
   const productCount = (key) => products.filter((p) => p.category === key).length;
 
   return (
@@ -374,21 +379,38 @@ export default function Gestion() {
             </div>
           </div>
 
+          <div className="flex gap-2 flex-wrap" data-testid="gestion-category-filters">
+            {[{ key: null, label: "Todas" }, ...categories].map((c) => (
+              <button
+                key={c.label}
+                onClick={() => setCat(c.key)}
+                data-testid={`gestion-filter-${c.key || "todas"}`}
+                className={`px-3.5 py-2 rounded-full text-xs font-bold border transition-colors ${
+                  cat === c.key ? "bg-slate-900 text-white border-slate-900" : "bg-white text-slate-600 border-slate-200 hover:border-slate-400"
+                }`}
+              >
+                {c.label}
+              </button>
+            ))}
+          </div>
+
           {view === "grid" ? (
           <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4" data-testid="gestion-products-grid">
             {filtered.map((p) => (
-              <div key={p.id} className="card-soft overflow-hidden group flex flex-col" data-testid={`gestion-product-card-${p.id}`}>
+              <div key={p.id} className={`card-soft overflow-hidden group flex flex-col ${p.active ? "" : "opacity-60"}`} data-testid={`gestion-product-card-${p.id}`}>
                 <div className="relative h-40 bg-gradient-to-br from-amber-50 to-emerald-50 overflow-hidden">
                   {p.image_url ? (
-                    <img src={p.image_url} alt={p.name} loading="lazy" className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300" />
+                    <img src={p.image_url} alt={p.name} loading="lazy" className={`w-full h-full object-cover group-hover:scale-105 transition-transform duration-300 ${p.active ? "" : "grayscale"}`} />
                   ) : (
                     <div className="w-full h-full flex items-center justify-center">
                       <Package className="w-10 h-10 text-amber-300" />
                     </div>
                   )}
-                  <span className={`absolute top-2.5 right-2.5 ${p.active ? "badge-active" : "badge-inactive"}`} data-testid={`gestion-product-status-${p.id}`}>
-                    {p.active ? "Activo" : "Inactivo"}
-                  </span>
+                  {!p.active && (
+                    <span className="absolute top-2.5 right-2.5 badge-inactive" data-testid={`gestion-product-status-${p.id}`}>
+                      Inactivo · no sale en el catálogo
+                    </span>
+                  )}
                   <span className={`absolute bottom-2.5 left-2.5 text-[10px] font-bold px-2 py-0.5 rounded-full border ${catStyle(categories, p.category)}`}>
                     {catLabel(categories, p.category)}
                   </span>
@@ -454,13 +476,12 @@ export default function Gestion() {
                     <th className="px-4 py-3">Categoría</th>
                     <th className="px-4 py-3 text-right">Precio</th>
                     <th className="px-4 py-3 text-right">Stock</th>
-                    <th className="px-4 py-3 text-center">Estado</th>
                     <th className="px-4 py-3 text-right">Acciones</th>
                   </tr>
                 </thead>
                 <tbody>
                   {filtered.map((p) => (
-                    <tr key={p.id} className="border-b border-slate-100 hover:bg-amber-50/40 transition-colors" data-testid={`gestion-product-row-${p.id}`}>
+                    <tr key={p.id} className={`border-b border-slate-100 hover:bg-amber-50/40 transition-colors ${p.active ? "" : "opacity-60"}`} data-testid={`gestion-product-row-${p.id}`}>
                       <td className="px-4 py-3">
                         <div className="flex items-center gap-3">
                           <div className="w-10 h-10 rounded-lg overflow-hidden bg-amber-50 shrink-0 flex items-center justify-center">
@@ -471,7 +492,10 @@ export default function Gestion() {
                             )}
                           </div>
                           <div>
-                            <p className="font-semibold text-slate-900">{p.name}</p>
+                            <p className="font-semibold text-slate-900">
+                              {p.name}
+                              {!p.active && <span className="ml-2 badge-inactive align-middle" data-testid={`product-status-${p.id}`}>Inactivo</span>}
+                            </p>
                             {p.thc != null && <p className="text-xs text-slate-400">THC {p.thc}%{p.cbd ? ` · CBD ${p.cbd}%` : ""}</p>}
                           </div>
                         </div>
@@ -484,11 +508,6 @@ export default function Gestion() {
                       <td className="px-4 py-3 text-right font-mono-num font-bold text-slate-900">{fmtEUR(p.price)}/{p.unit}</td>
                       <td className={`px-4 py-3 text-right font-mono-num font-bold ${p.stock <= 0 ? "text-red-600" : p.stock < 10 ? "text-amber-600" : "text-slate-900"}`}>
                         {fmtQty(p.stock)}{p.unit}
-                      </td>
-                      <td className="px-4 py-3 text-center">
-                        <span className={p.active ? "badge-active" : "badge-inactive"} data-testid={`product-status-${p.id}`}>
-                          {p.active ? "Activo" : "Inactivo"}
-                        </span>
                       </td>
                       <td className="px-4 py-3">
                         <div className="flex justify-end gap-1">

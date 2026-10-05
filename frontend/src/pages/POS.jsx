@@ -2,11 +2,11 @@ import { useEffect, useMemo, useState } from "react";
 import { useSearchParams, Link } from "react-router-dom";
 import { motion, AnimatePresence } from "framer-motion";
 import { toast } from "sonner";
-import api, { fmtEUR, apiError, catLabel, catStyle, fmtQty } from "@/lib/api";
+import api, { fmtEUR, apiError, catLabel, catStyle } from "@/lib/api";
 import { useAuth } from "@/context/AuthContext";
 import TicketDialog from "@/components/TicketDialog";
 import RechargeDialog from "@/components/RechargeDialog";
-import { Search, ShoppingCart, Trash2, Plus, Minus, UserRound, Wallet, X, Loader2, Coins, Hourglass } from "lucide-react";
+import { Search, ShoppingCart, Trash2, Plus, Minus, UserRound, Wallet, X, Loader2, Coins, Hourglass, Package } from "lucide-react";
 
 export default function POS() {
   const { user } = useAuth();
@@ -84,16 +84,6 @@ export default function POS() {
       return;
     }
     setCart((c) => ({ ...c, [p.id]: (c[p.id] || 0) + 1 }));
-  };
-
-  const addCredits = (p, credits) => {
-    const grams = Math.round((credits / p.price) * 1000) / 1000;
-    if (p.stock < (cart[p.id] || 0) + grams) {
-      toast.warning(`Sin más stock de «${p.name}»`);
-      return;
-    }
-    setCart((c) => ({ ...c, [p.id]: Math.round(((c[p.id] || 0) + grams) * 1000) / 1000 }));
-    setCartMode((m) => ({ ...m, [p.id]: "cr" }));
   };
 
   const changeQty = (id, delta) => {
@@ -214,7 +204,7 @@ export default function POS() {
             ))}
           </div>
 
-          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
+          <div className="grid grid-cols-[repeat(auto-fill,minmax(150px,1fr))] gap-3" data-testid="pos-products-grid">
             {filtered.map((p) => {
               const out = p.stock <= 0;
               return (
@@ -225,42 +215,30 @@ export default function POS() {
                   onClick={() => !out && addToCart(p)}
                   role="button"
                   data-testid={`pos-product-card-${p.id}`}
-                  className={`pos-card text-left min-h-[110px] overflow-hidden ${out ? "opacity-45 cursor-not-allowed" : "hover:-translate-y-0.5"}`}
+                  className={`pos-card p-0 aspect-square justify-start overflow-hidden ${out ? "opacity-45 cursor-not-allowed" : "hover:-translate-y-0.5"}`}
                 >
-                  {p.image_url && (
-                    <div className="h-20 -mx-3 -mt-3 mb-2.5 overflow-hidden rounded-t-xl">
-                      <img src={p.image_url} alt={p.name} className="w-full h-full object-cover" loading="lazy" />
-                    </div>
-                  )}
-                  <div>
-                    <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full border ${catStyle(categories, p.category)}`}>
+                  <div className="relative flex-1 min-h-0 bg-gradient-to-br from-amber-50 to-emerald-50">
+                    {p.image_url ? (
+                      <img src={p.image_url} alt={p.name} className="absolute inset-0 w-full h-full object-cover" loading="lazy" />
+                    ) : (
+                      <div className="absolute inset-0 flex items-center justify-center">
+                        <Package className="w-8 h-8 text-amber-300" />
+                      </div>
+                    )}
+                    <span className={`absolute top-2 left-2 text-[10px] font-bold px-2 py-0.5 rounded-full border ${catStyle(categories, p.category)}`}>
                       {catLabel(categories, p.category)}
                     </span>
-                    <p className="font-display font-bold text-slate-900 mt-2 leading-tight">{p.name}</p>
-                    <p className="text-[11px] text-slate-400 mt-0.5">
-                      {p.thc ? `THC ${p.thc}% · ` : ""}stock {fmtQty(p.stock)}{p.unit}
-                    </p>
+                    {out && <span className="absolute top-2 right-2 badge-inactive">Agotado</span>}
                   </div>
-                  <p className="font-display text-xl font-extrabold text-amber-600 mt-2">
-                    {fmtEUR(p.price)}<span className="text-xs font-semibold text-slate-400">/{p.unit}</span>
-                  </p>
-                  {p.unit === "g" && (
-                    <div className="mt-2 pt-2 border-t border-amber-100/80" onClick={(e) => e.stopPropagation()}>
-                      <p className="text-[10px] text-slate-400 mb-1.5">10 Cr ≈ {Math.round((10 / p.price) * 100) / 100} g</p>
-                      <div className="flex gap-1">
-                        {[5, 10, 20].map((cr) => (
-                          <button
-                            key={cr}
-                            onClick={(e) => { e.stopPropagation(); addCredits(p, cr); }}
-                            data-testid={`pos-quick-${cr}-${p.id}`}
-                            className="flex-1 text-[10px] font-bold py-1 rounded-md bg-amber-100 text-amber-800 hover:bg-amber-200 border border-amber-200 transition-colors"
-                          >
-                            +{cr} Cr
-                          </button>
-                        ))}
-                      </div>
+                  <div className="px-2.5 pt-2 pb-2.5 shrink-0">
+                    <p className="font-display font-bold text-sm text-slate-900 leading-tight line-clamp-2 min-h-[2.5em]">{p.name}</p>
+                    <div className="flex items-baseline justify-between gap-1 mt-1">
+                      <p className="font-display text-lg font-extrabold text-amber-600 leading-none whitespace-nowrap">
+                        {fmtEUR(p.price)}<span className="text-[11px] font-semibold text-slate-400">/{p.unit}</span>
+                      </p>
+                      {p.thc ? <span className="text-[10px] text-slate-400 whitespace-nowrap">THC {p.thc}%</span> : null}
                     </div>
-                  )}
+                  </div>
                 </motion.div>
               );
             })}

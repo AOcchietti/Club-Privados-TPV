@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import api, { fmtEUR, catLabel, fmtQty } from "@/lib/api";
+import api, { fmtEUR, catLabel } from "@/lib/api";
 import { Package, Search, LayoutGrid, List } from "lucide-react";
 
 export default function Productos() {
@@ -10,7 +10,8 @@ export default function Productos() {
   const [view, setView] = useState("grid");
 
   const load = () => {
-    api.get("/products").then((r) => setProducts(r.data)).catch(() => {});
+    // El catálogo solo muestra productos activos; los inactivos se gestionan desde Gestión.
+    api.get("/products", { params: { active_only: true } }).then((r) => setProducts(r.data)).catch(() => {});
     api.get("/categories").then((r) => setCategories(r.data)).catch(() => {});
   };
   useEffect(() => { load(); }, []);
@@ -72,9 +73,6 @@ export default function Productos() {
                   <Package className="w-10 h-10 text-amber-300" />
                 </div>
               )}
-              <span className={`absolute top-2.5 right-2.5 ${p.active ? "badge-active" : "badge-inactive"}`} data-testid={`product-status-${p.id}`}>
-                {p.active ? "Activo" : "Inactivo"}
-              </span>
               <span className="absolute bottom-2.5 left-2.5 text-[10px] font-bold px-2 py-0.5 rounded-full bg-white/85 backdrop-blur-sm text-slate-700 border border-white">
                 {catLabel(categories, p.category)}
               </span>
@@ -84,12 +82,9 @@ export default function Productos() {
               <p className="text-xs text-slate-400 mt-0.5 truncate">
                 {p.thc != null ? `THC ${p.thc}%${p.cbd ? ` · CBD ${p.cbd}%` : ""}` : (p.description || "")}
               </p>
-              <div className="mt-auto pt-3 flex items-end justify-between">
+              <div className="mt-auto pt-3">
                 <p className="font-display text-xl font-extrabold text-amber-600">
                   {fmtEUR(p.price)}<span className="text-xs font-semibold text-slate-400">/{p.unit}</span>
-                </p>
-                <p className={`font-mono-num text-sm font-bold ${p.stock <= 0 ? "text-red-600" : p.stock < 10 ? "text-amber-600" : "text-slate-700"}`}>
-                  {fmtQty(p.stock)}{p.unit}
                 </p>
               </div>
             </div>
@@ -108,8 +103,6 @@ export default function Productos() {
                 <th className="px-4 py-3">Producto</th>
                 <th className="px-4 py-3">Categoría</th>
                 <th className="px-4 py-3 text-right">Precio</th>
-                <th className="px-4 py-3 text-right">Stock</th>
-                <th className="px-4 py-3 text-center">Estado</th>
               </tr>
             </thead>
             <tbody>
@@ -121,14 +114,6 @@ export default function Productos() {
                   </td>
                   <td className="px-4 py-3 capitalize text-slate-600">{catLabel(categories, p.category)}</td>
                   <td className="px-4 py-3 text-right font-mono-num font-bold text-slate-900">{fmtEUR(p.price)}/{p.unit}</td>
-                  <td className={`px-4 py-3 text-right font-mono-num font-bold ${p.stock <= 0 ? "text-red-600" : p.stock < 10 ? "text-amber-600" : "text-slate-900"}`}>
-                    {fmtQty(p.stock)}{p.unit}
-                  </td>
-                  <td className="px-4 py-3 text-center">
-                    <span className={p.active ? "badge-active" : "badge-inactive"} data-testid={`product-status-${p.id}`}>
-                      {p.active ? "Activo" : "Inactivo"}
-                    </span>
-                  </td>
                 </tr>
               ))}
             </tbody>

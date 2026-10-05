@@ -56,6 +56,14 @@ Frontend copiado tal cual de la preview de Emergent; backend reconstruido a part
 - Alta pública con QR (`/alta`, sin login): datos, foto del documento, foto facial, firma y aceptación del acuerdo legal (PDF subido por admin). Exige mayoría de edad y documento no repetido; el socio queda "pendiente" y no se le puede dispensar hasta activarlo. Subidas públicas y altas limitadas por IP.
 - Nuevas dependencias backend: `segno` (QR).
 
+## Implementado (05/10/2026, iteración 6)
+- El recuento manda: al confirmar la apertura y al cerrar el turno, lo contado pasa a ser el stock del sistema (movimiento de stock tipo `recuento`). Si se marca "contado = esperado", el stock no cambia.
+- Orden de secciones del recuento por palabras clave de la categoría (válido para cualquier club): flor/marihuana → hash/hachís → extracto → dry → polen → resto alfabético.
+- TPV: sin stock visible ni botones rápidos +5/+10/+20 Cr; tarjetas cuadradas (imagen + nombre + precio) en rejilla adaptable. Barra lateral más estrecha (w-56).
+- Catálogo (Productos): solo productos activos, sin stock ni etiquetas de estado.
+- Gestión: filtros por categoría, inactivos siempre al final y atenuados (sin etiqueta "Activo"); el motivo es opcional en las entradas de stock (sigue siendo obligatorio en mermas y ajustes). El stock sigue visible aquí.
+- PDF con el resumen del cierre (`GET /cash/sessions/{id}/report.pdf`, admin o responsable del turno): turno, arqueo, ventas, productos vendidos, movimientos de caja y diferencias de los recuentos. Se descarga solo al cerrar y desde el histórico de turnos. Generado sin dependencias (`backend/cierre_pdf.py`).
+
 ## Backlog priorizado
 - P0: nada bloqueante pendiente.
 - P1: impresión/exportación de tickets y cierres (PDF/Z-report); límites de dispensación por socio/día (normativa CSC); caducidad de membresía con avisos; vista de socios con deuda (filtro en lista de socios).

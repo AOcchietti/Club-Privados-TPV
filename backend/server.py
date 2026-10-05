@@ -24,6 +24,8 @@ from motor.motor_asyncio import AsyncIOMotorClient
 from pydantic import BaseModel
 from pymongo.errors import DuplicateKeyError
 
+from cierre_pdf import build_closing_pdf, as_local
+
 mongo_url = os.environ["MONGO_URL"]
 client = AsyncIOMotorClient(mongo_url)
 db = client[os.environ["DB_NAME"]]
@@ -949,8 +951,8 @@ async def stock_movement(product_id: str, body: StockMoveIn, user: dict = Depend
     if body.type not in ["entrada", "merma", "ajuste"]:
         raise HTTPException(status_code=400, detail="Tipo de movimiento no válido")
     reason = (body.reason or "").strip()
-    if not reason:
-        raise HTTPException(status_code=400, detail="El motivo es obligatorio")
+    if not reason and body.type != "entrada":
+        raise HTTPException(status_code=400, detail="El motivo es obligatorio para mermas y ajustes")
     session = await get_active_session()
     if session and session["status"] in ("opening", "closing"):
         raise HTTPException(status_code=400, detail=f"La caja está {STATUS_TEXT[session['status']]}: los ajustes de stock están bloqueados hasta terminar el recuento")
@@ -974,11 +976,11 @@ async def stock_movement(product_id: str, body: StockMoveIn, user: dict = Depend
         raise HTTPException(status_code=400, detail="El stock no puede quedar en negativo")
     updated = await db.products.find_one({"_id": product["_id"]})
     before = round(updated["stock"] - delta, 3)
-    await record_stock_movement(product, body.type, delta, before, reason, user,
+    await record_stock_movement(product, body.type, delta, before, reason or None, user,
                                 str(session["_id"]) if session else None)
     unit = product.get("unit", "g")
     await log_activity(user, "stock_" + body.type,
-                       f"{body.type.capitalize()} de {'+' if delta > 0 else ''}{delta}{unit} en «{product['name']}» · {reason} "
+                       f"{body.type.capitalize()} de {'+' if delta > 0 else ''}{delta}{unit} en «{product['name']}»{' · ' + reason if reason else ''} "
                        f"(stock {before} → {round(updated['stock'], 3)}{unit})")
     return ser(updated)
 
@@ -1146,9 +1148,26 @@ async def get_sale(sale_id: str, user: dict = Depends(require_staff)):
 #   POST /cash/closing/cash       → arqueo de efectivo.
 #   POST /cash/closing/stocktake/start → recuento de cierre.
 #   POST /cash/closing/finalize   → "closed".
-# Las diferencias de recuento se registran pero NO ajustan el stock del sistema.
+# Al confirmar la apertura y al cerrar, lo contado pasa a ser el stock del sistema (si se marca
+# "contado = esperado" el stock queda igual). Las diferencias quedan registradas en el informe.
 
 STOCKTAKE_SCOPE = "productos activos y cualquier producto con existencias, agrupados por categoría"
+
+# Orden de las secciones del recuento según palabras clave de la categoría (válido para cualquier club):
+# flores primero, después hachís, extractos, dry y polen, y al final el resto en orden alfabético.
+SECTION_PRIORITY = [("flor", "marihuana", "marijuana"), ("hash", "hachis"), ("extracto",), ("dry",), ("polen",)]
+
+
+def plain(text: str) -> str:
+    return unicodedata.normalize("NFKD", text or "").encode("ascii", "ignore").decode("ascii").lower()
+
+
+def section_sort_key(label: str):
+    t = plain(label)
+    for rank, words in enumerate(SECTION_PRIORITY):
+        if any(w in t for w in words):
+            return (rank, t)
+    return (len(SECTION_PRIORITY), t)
 
 
 def can_operate(session: dict, user: dict) -> bool:
@@ -1200,12 +1219,13 @@ async def build_stocktake(session: dict, kind: str, user: dict) -> dict:
             "counted": None,
             "difference": None,
         })
+    lines.sort(key=lambda l: (section_sort_key(l["category_label"]), plain(l["name"])))
     doc = {
         "session_id": str(session["_id"]),
         "kind": kind,
         "status": "draft",
         "scope": STOCKTAKE_SCOPE,
-        "sections": sorted({l["category_label"] for l in lines}),
+        "sections": sorted({l["category_label"] for l in lines}, key=section_sort_key),
         "lines": lines,
         "version": 1,
         "created_by": user["name"],
@@ -1228,6 +1248,24 @@ async def save_stocktake_lines(st: dict, lines: list, version: int) -> dict:
     if res.modified_count == 0:
         raise HTTPException(status_code=409, detail="El recuento ha cambiado en otro dispositivo; se ha recargado")
     return ser(await db.stocktakes.find_one({"_id": st["_id"]}))
+
+
+async def apply_stocktake_to_stock(st: dict, session: dict, user: dict) -> int:
+    """Lo contado pasa a ser el stock del sistema. Devuelve cuántos productos han cambiado."""
+    label = "apertura" if st["kind"] == "opening" else "cierre"
+    changed = 0
+    for l in st["lines"]:
+        if l["counted"] is None or l["difference"] is None or abs(l["difference"]) <= 1e-9:
+            continue
+        product = await db.products.find_one({"_id": oid(l["product_id"])})
+        if not product:
+            continue
+        before = round(product.get("stock", 0) or 0, 3)
+        await db.products.update_one({"_id": product["_id"]}, {"$set": {"stock": l["counted"]}})
+        await record_stock_movement(product, "recuento", round(l["counted"] - before, 3), before,
+                                    f"Recuento de {label} · turno de {session['opened_by']}", user, str(session["_id"]))
+        changed += 1
+    return changed
 
 
 def set_counted(line: dict, counted: Optional[float]):
@@ -1333,12 +1371,14 @@ async def cash_opening_confirm(user: dict = Depends(require_staff)):
     summary = stocktake_summary(st)
     if summary["pendientes"]:
         raise HTTPException(status_code=400, detail=f"Quedan {summary['pendientes']} productos pendientes de contar")
-    await db.stocktakes.update_one({"_id": st["_id"]}, {"$set": {"status": "final", "finalized_at": now_utc(), "finalized_by": user["name"]}})
+    changed = await apply_stocktake_to_stock(st, session, user)
+    await db.stocktakes.update_one({"_id": st["_id"]}, {"$set": {
+        "status": "final", "finalized_at": now_utc(), "finalized_by": user["name"], "stock_updated": changed}})
     await db.cash_sessions.update_one({"_id": session["_id"]}, {"$set": {
         "status": "open", "opened_at": now_utc(), "opening_confirmed_by": user["name"]}})
     await log_activity(user, "caja_abierta",
                        f"Turno de {session['opened_by']} abierto con {session['starting_amount']} Cr de fondo · "
-                       f"recuento de apertura con {summary['diferencias']} diferencias")
+                       f"recuento de apertura: {changed} productos con el stock actualizado a lo contado")
     return ser(await db.cash_sessions.find_one({"_id": session["_id"]}))
 
 
@@ -1482,7 +1522,9 @@ async def cash_closing_finalize(user: dict = Depends(require_staff)):
     if summary["pendientes"]:
         raise HTTPException(status_code=400, detail=f"No se puede cerrar: quedan {summary['pendientes']} productos pendientes de contar")
     totals = await session_totals(session)
-    await db.stocktakes.update_one({"_id": st["_id"]}, {"$set": {"status": "final", "finalized_at": now_utc(), "finalized_by": user["name"]}})
+    changed = await apply_stocktake_to_stock(st, session, user)
+    await db.stocktakes.update_one({"_id": st["_id"]}, {"$set": {
+        "status": "final", "finalized_at": now_utc(), "finalized_by": user["name"], "stock_updated": changed}})
     await db.cash_sessions.update_one({"_id": session["_id"]}, {
         "$set": {
             "status": "closed",
@@ -1500,7 +1542,7 @@ async def cash_closing_finalize(user: dict = Depends(require_staff)):
         "$unset": {"active_lock": ""}})
     await log_activity(user, "caja_cerrada",
                        f"Turno de {session['opened_by']} cerrado · esperado {cc['expected']}, contado {cc['counted']} "
-                       f"(diferencia {cc['difference']}) · {summary['diferencias']} diferencias de stock")
+                       f"(diferencia {cc['difference']}) · {changed} productos con el stock actualizado a lo contado")
     return ser(await db.cash_sessions.find_one({"_id": session["_id"]}))
 
 
@@ -1541,6 +1583,30 @@ async def cash_session_report(session_id: str, user: dict = Depends(require_admi
         "out_of_shift_sales": [{"id": str(s["_id"]), "ticket_number": s["ticket_number"],
                                 "socio_name": s.get("socio_name"), "total": s["total"]} for s in oos],
     }
+
+
+@api_router.get("/cash/sessions/{session_id}/report.pdf")
+async def cash_session_pdf(session_id: str, user: dict = Depends(require_staff)):
+    """Resumen del cierre en PDF. Lo puede descargar un administrador o el responsable del turno."""
+    session = await db.cash_sessions.find_one({"_id": oid(session_id)})
+    if not session:
+        raise HTTPException(status_code=404, detail="Turno no encontrado")
+    if session.get("status") != "closed":
+        raise HTTPException(status_code=400, detail="El turno todavía no está cerrado")
+    if user["role"] != "admin" and session.get("opened_by_id") != user["id"]:
+        raise HTTPException(status_code=403, detail="Solo un administrador o el responsable del turno pueden descargarlo")
+    sid = str(session["_id"])
+    sales = await db.sales.find({"cash_session_id": sid}).sort("created_at", 1).to_list(20000)
+    recharges = await db.recharges.find({"session_id": sid}).to_list(20000)
+    movements = await db.cash_movements.find({"session_id": sid}).to_list(2000)
+    opening = await db.stocktakes.find_one({"session_id": sid, "kind": "opening", "status": "final"})
+    closing = await db.stocktakes.find_one({"session_id": sid, "kind": "closing", "status": "final"})
+    pdf = build_closing_pdf(session, sales, recharges, movements, opening, closing)
+    closed = as_local(session.get("closed_at"))
+    filename = f"cierre-turno-{closed.strftime('%Y-%m-%d-%H%M') if closed else sid}.pdf"
+    await log_activity(user, "caja_pdf", f"Descarga del resumen de cierre del turno de {session.get('opened_by')}")
+    return Response(content=pdf, media_type="application/pdf",
+                    headers={"Content-Disposition": f'attachment; filename="{filename}"'})
 
 
 # ---------- dashboard ----------

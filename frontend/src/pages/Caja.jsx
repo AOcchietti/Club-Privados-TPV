@@ -1,13 +1,13 @@
 import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
-import api, { fmtEUR, fmtDateTime, apiError, fmtQty } from "@/lib/api";
+import api, { fmtEUR, fmtDateTime, apiError, fmtQty, downloadClosingPdf } from "@/lib/api";
 import { useAuth } from "@/context/AuthContext";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from "@/components/ui/alert-dialog";
 import {
   Wallet, ArrowUpRight, ArrowDownLeft, Lock, LockOpen, Scale, Coins, ShoppingBag,
   AlertTriangle, ClipboardCheck, PackageSearch, ListChecks, Search, Undo2, Loader2,
-  Check, Square, CheckSquare, Hourglass,
+  Check, Square, CheckSquare, Hourglass, FileText,
 } from "lucide-react";
 
 const CLOSING_STEPS = ["Efectivo", "Stock por secciones", "Revisión"];
@@ -185,8 +185,10 @@ function StocktakeGrid({ stocktake, onUpdated, onNext, nextLabel }) {
     for (const l of lines) {
       (map[l.category_label] = map[l.category_label] || []).push(l);
     }
-    return Object.entries(map).sort((a, b) => a[0].localeCompare(b[0]));
-  }, [lines]);
+    const order = stocktake.sections || [];
+    const rank = (s) => (order.indexOf(s) === -1 ? order.length : order.indexOf(s));
+    return Object.entries(map).sort((a, b) => rank(a[0]) - rank(b[0]) || a[0].localeCompare(b[0]));
+  }, [lines, stocktake.sections]);
 
   const pendientes = stocktake.lines.filter((l) => l.counted === null || l.counted === undefined).length;
   const discrepancias = stocktake.lines.filter((l) => l.difference !== null && l.difference !== undefined && Math.abs(l.difference) > 1e-9).length;
@@ -195,7 +197,7 @@ function StocktakeGrid({ stocktake, onUpdated, onNext, nextLabel }) {
     <div className="space-y-4" data-testid="stocktake-step">
       <div className="card-soft p-4 flex flex-wrap items-center gap-3">
         <p className="text-xs text-slate-500 flex-1 min-w-[220px]">
-          Alcance: {stocktake.scope}. Las diferencias quedan registradas, pero el stock del sistema se mantiene.
+          Alcance: {stocktake.scope}. Al confirmar, lo que cuentes pasa a ser el stock del sistema.
         </p>
         <span className="badge-inactive" data-testid="stocktake-progress">
           {stocktake.lines.length - pendientes}/{stocktake.lines.length} contados · {discrepancias} con diferencia
@@ -311,9 +313,10 @@ function ReviewStep({ session, stocktake, onFinalized }) {
   const finalize = async () => {
     setSaving(true);
     try {
-      await api.post("/cash/closing/finalize");
-      toast.success("Turno cerrado definitivamente. El informe queda en el histórico.");
+      const res = await api.post("/cash/closing/finalize");
+      toast.success("Turno cerrado definitivamente. Descargando el resumen en PDF…");
       onFinalized();
+      downloadClosingPdf(res.data).catch(() => toast.error("No se pudo descargar el PDF; puedes bajarlo desde el histórico de turnos"));
     } catch (e) {
       toast.error(apiError(e));
       onFinalized(true);
@@ -353,7 +356,7 @@ function ReviewStep({ session, stocktake, onFinalized }) {
           <p className="text-sm text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-xl p-3">Todo el stock cuadra con el sistema.</p>
         ) : (
           <div className="space-y-2" data-testid="review-discrepancias">
-            <p className="text-xs text-slate-500">Las diferencias quedan registradas en el informe; el stock del sistema se mantiene tal cual.</p>
+            <p className="text-xs text-slate-500">Al confirmar el cierre, el stock del sistema se actualiza con lo contado y las diferencias quedan en el informe.</p>
             {discrepancias.map((l) => {
               const tone = diffTone(l, l.difference);
               return (
@@ -414,6 +417,17 @@ function ReportDialog({ sessionId, open, onClose }) {
   }, [open, sessionId]);
 
   const s = report?.session;
+  const [downloading, setDownloading] = useState(false);
+  const download = async () => {
+    setDownloading(true);
+    try {
+      await downloadClosingPdf(s);
+    } catch (e) {
+      toast.error(apiError(e, "No se pudo generar el PDF"));
+    } finally {
+      setDownloading(false);
+    }
+  };
 
   return (
     <Dialog open={open} onOpenChange={onClose}>
@@ -425,9 +439,15 @@ function ReportDialog({ sessionId, open, onClose }) {
           <p className="text-sm text-slate-400 py-8 text-center">Cargando informe…</p>
         ) : (
           <div className="space-y-4 text-sm">
-            <div className="text-xs text-slate-500">
-              <p>Responsable: <b>{s.opened_by}</b> · abierto {fmtDateTime(s.opened_at)}</p>
-              <p>Cerrado por: <b>{s.closed_by}</b> · {fmtDateTime(s.closed_at)}{s.supervised ? " · con supervisión de administrador" : ""}</p>
+            <div className="flex items-start justify-between gap-3">
+              <div className="text-xs text-slate-500">
+                <p>Responsable: <b>{s.opened_by}</b> · abierto {fmtDateTime(s.opened_at)}</p>
+                <p>Cerrado por: <b>{s.closed_by}</b> · {fmtDateTime(s.closed_at)}{s.supervised ? " · con supervisión de administrador" : ""}</p>
+              </div>
+              <button onClick={download} disabled={downloading} className="btn-outline py-2 text-xs shrink-0" data-testid="cash-report-pdf-btn">
+                {downloading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <FileText className="w-3.5 h-3.5" />}
+                Descargar PDF
+              </button>
             </div>
             {report.out_of_shift_sales?.length > 0 && (
               <div className="bg-sky-50 border border-sky-200 rounded-xl p-3.5" data-testid="report-out-of-shift">
@@ -689,7 +709,7 @@ export default function Caja() {
                 <p className="text-xs text-slate-500">
                   {openingPendientes > 0
                     ? `Quedan ${openingPendientes} productos pendientes de contar.`
-                    : "Todo contado. Las diferencias quedan registradas sin ajustar el stock del sistema."}
+                    : "Todo contado. Al confirmar, lo contado pasa a ser el stock del sistema."}
                 </p>
                 <button onClick={confirmOpening} disabled={confirmingOpen || openingPendientes > 0} className="btn-secondary" data-testid="opening-confirm-btn">
                   {confirmingOpen ? <Loader2 className="w-4 h-4 animate-spin" /> : <LockOpen className="w-4 h-4" />}
@@ -828,6 +848,7 @@ export default function Caja() {
                     <th className="py-2 pr-4 text-right">Esperado</th>
                     <th className="py-2 pr-4 text-right">Contado</th>
                     <th className="py-2 text-right">Diferencia</th>
+                    <th className="py-2 w-10"></th>
                   </tr>
                 </thead>
                 <tbody>
@@ -840,6 +861,16 @@ export default function Caja() {
                       <td className="py-2.5 pr-4 text-right font-mono-num">{s.counted_amount !== undefined ? fmtEUR(s.counted_amount) : "—"}</td>
                       <td className={`py-2.5 text-right font-mono-num font-bold ${Math.abs(s.difference || 0) < 0.005 ? "text-emerald-600" : "text-red-500"}`}>
                         {s.difference > 0 ? "+" : ""}{fmtEUR(s.difference || 0)}
+                      </td>
+                      <td className="py-2.5 text-right">
+                        <button
+                          onClick={(e) => { e.stopPropagation(); downloadClosingPdf(s).catch((err) => toast.error(apiError(err, "No se pudo generar el PDF"))); }}
+                          title="Descargar resumen en PDF"
+                          data-testid={`cash-session-pdf-${s.id}`}
+                          className="p-1.5 rounded-lg text-slate-400 hover:text-amber-700 hover:bg-amber-50 transition-colors"
+                        >
+                          <FileText className="w-4 h-4" />
+                        </button>
                       </td>
                     </tr>
                   ))}
