@@ -1,13 +1,12 @@
 import { useEffect, useMemo, useState } from "react";
-import { useSearchParams } from "react-router-dom";
+import { useSearchParams, Link } from "react-router-dom";
 import { motion, AnimatePresence } from "framer-motion";
 import { toast } from "sonner";
-import api, { fmtEUR, apiError, catLabel, catStyle } from "@/lib/api";
+import api, { fmtEUR, apiError, catLabel, catStyle, fmtQty } from "@/lib/api";
 import { useAuth } from "@/context/AuthContext";
 import TicketDialog from "@/components/TicketDialog";
 import RechargeDialog from "@/components/RechargeDialog";
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { Search, ShoppingCart, Trash2, Plus, Minus, UserRound, Wallet, X, Loader2, Coins } from "lucide-react";
+import { Search, ShoppingCart, Trash2, Plus, Minus, UserRound, Wallet, X, Loader2, Coins, Hourglass } from "lucide-react";
 
 export default function POS() {
   const { user } = useAuth();
@@ -22,10 +21,9 @@ export default function POS() {
   const [socioQ, setSocioQ] = useState("");
   const [showSocioList, setShowSocioList] = useState(false);
   const [cash, setCash] = useState(null);
+  const [pendingOut, setPendingOut] = useState({ count: 0, total: 0 });
   const [checkingOut, setCheckingOut] = useState(false);
   const [lastSale, setLastSale] = useState(null);
-  const [openCashDialog, setOpenCashDialog] = useState(false);
-  const [startingAmount, setStartingAmount] = useState("100");
 
   const [searchParams] = useSearchParams();
   const [rechargeOpen, setRechargeOpen] = useState(false);
@@ -34,7 +32,10 @@ export default function POS() {
     api.get("/products", { params: { active_only: true } }).then((r) => setProducts(r.data)).catch(() => {});
     api.get("/categories").then((r) => setCategories(r.data)).catch(() => {});
     api.get("/users", { params: { role: "socio" } }).then((r) => setSocios(r.data)).catch(() => {});
-    api.get("/cash/current").then((r) => setCash(r.data.session)).catch(() => setCash(null));
+    api.get("/cash/current").then((r) => {
+      setCash(r.data.session);
+      setPendingOut(r.data.out_of_shift_pending || { count: 0, total: 0 });
+    }).catch(() => setCash(null));
   };
   useEffect(load, []);
 
@@ -143,23 +144,16 @@ export default function POS() {
         api.get(`/users/${socio.id}`).then((r) => setSocio(r.data)).catch(() => setSocio(null));
       }
       setSocioQ("");
-      toast.success(`Ticket ${res.data.ticket_number} · ${fmtEUR(res.data.total)}`);
+      toast.success(
+        res.data.out_of_shift
+          ? `Ticket ${res.data.ticket_number} · ${fmtEUR(res.data.total)} · FUERA DE TURNO: se incorporará a la próxima caja`
+          : `Ticket ${res.data.ticket_number} · ${fmtEUR(res.data.total)}`
+      );
       load();
     } catch (e) {
       toast.error(apiError(e, "No se pudo registrar la venta"));
     } finally {
       setCheckingOut(false);
-    }
-  };
-
-  const openCash = async () => {
-    try {
-      await api.post("/cash/open", { starting_amount: parseFloat(startingAmount) || 0 });
-      toast.success("Caja abierta con éxito");
-      setOpenCashDialog(false);
-      load();
-    } catch (e) {
-      toast.error(apiError(e));
     }
   };
 
@@ -171,13 +165,22 @@ export default function POS() {
           <p className="text-sm text-slate-500 mt-1">Toca un producto para añadirlo al ticket.</p>
         </div>
         {cash ? (
-          <span className="badge-active" data-testid="pos-cash-status">Caja abierta · fondo {fmtEUR(cash.starting_amount)}</span>
-        ) : user.role === "admin" ? (
-          <button onClick={() => setOpenCashDialog(true)} className="btn-outline text-amber-700 border-amber-300 bg-amber-50" data-testid="pos-open-cash-btn">
-            <Wallet className="w-4 h-4" /> Caja cerrada · Abrir
-          </button>
+          cash.status === "closing" ? (
+            <span className="badge-inactive" data-testid="pos-cash-status">Caja en proceso de cierre · ventas en pausa</span>
+          ) : cash.status === "opening" ? (
+            <span className="badge-inactive" data-testid="pos-cash-status">Caja en apertura (recuento de stock) · ventas en pausa</span>
+          ) : (
+            <span className="badge-active" data-testid="pos-cash-status">Caja abierta · fondo {fmtEUR(cash.starting_amount)}</span>
+          )
         ) : (
-          <span className="badge-inactive" data-testid="pos-cash-status">Caja cerrada</span>
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-bold bg-sky-100 text-sky-800 border border-sky-200" data-testid="pos-cash-status">
+              <Hourglass className="w-3.5 h-3.5" /> Sin turno abierto · las ventas quedan fuera de turno
+            </span>
+            <Link to="/caja" className="btn-outline text-amber-700 border-amber-300 bg-amber-50 py-1.5 text-xs" data-testid="pos-goto-cash-btn">
+              <Wallet className="w-3.5 h-3.5" /> Abrir turno en Caja
+            </Link>
+          </div>
         )}
       </div>
 
@@ -235,7 +238,7 @@ export default function POS() {
                     </span>
                     <p className="font-display font-bold text-slate-900 mt-2 leading-tight">{p.name}</p>
                     <p className="text-[11px] text-slate-400 mt-0.5">
-                      {p.thc ? `THC ${p.thc}% · ` : ""}stock {p.stock}{p.unit}
+                      {p.thc ? `THC ${p.thc}% · ` : ""}stock {fmtQty(p.stock)}{p.unit}
                     </p>
                   </div>
                   <p className="font-display text-xl font-extrabold text-amber-600 mt-2">
@@ -427,6 +430,14 @@ export default function POS() {
             <span className="font-display text-3xl font-extrabold text-amber-600" data-testid="pos-cart-total">{fmtEUR(total)}</span>
           </div>
 
+          {!cash && (
+            <p className="text-xs text-sky-800 bg-sky-50 border border-sky-200 rounded-xl px-3 py-2 flex items-center gap-2" data-testid="pos-out-of-shift-note">
+              <Hourglass className="w-3.5 h-3.5 shrink-0" />
+              Venta fuera de turno: no se descuenta stock ahora; se incorporará a la próxima caja al abrirla.
+              {pendingOut.count > 0 && ` Ya hay ${pendingOut.count} pendientes (${fmtEUR(pendingOut.total)}).`}
+            </p>
+          )}
+
           <button
             onClick={checkout}
             disabled={cartItems.length === 0 || checkingOut || !socio}
@@ -441,24 +452,6 @@ export default function POS() {
 
       <TicketDialog sale={lastSale} open={!!lastSale} onClose={() => setLastSale(null)} />
       <RechargeDialog socio={socio} open={rechargeOpen} onClose={() => setRechargeOpen(false)} onDone={(u) => setSocio(u)} />
-
-      <Dialog open={openCashDialog} onOpenChange={setOpenCashDialog}>
-        <DialogContent className="max-w-xs">
-          <DialogHeader>
-            <DialogTitle className="font-display">Abrir caja</DialogTitle>
-          </DialogHeader>
-          <label className="text-xs font-semibold uppercase tracking-wider text-slate-500">Fondo inicial (créditos)</label>
-          <input
-            type="number"
-            min="0"
-            value={startingAmount}
-            onChange={(e) => setStartingAmount(e.target.value)}
-            data-testid="open-cash-amount-input"
-            className="w-full px-4 py-3 rounded-xl border border-slate-300 focus:outline-none focus:ring-2 focus:ring-amber-400"
-          />
-          <button onClick={openCash} className="btn-primary w-full" data-testid="cash-open-shift-btn">Abrir turno de caja</button>
-        </DialogContent>
-      </Dialog>
     </div>
   );
 }

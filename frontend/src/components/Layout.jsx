@@ -14,7 +14,7 @@ const NAV = [
   { to: "/gestion", label: "Gestión", icon: ClipboardList, testid: "nav-item-gestion", roles: ["admin", "cajero"] },
   { to: "/usuarios", label: "Socios y equipo", icon: Users, testid: "nav-item-socios", roles: ["admin", "cajero"] },
   { to: "/panel", label: "Panel", icon: LayoutDashboard, testid: "nav-item-panel", roles: ["admin"] },
-  { to: "/caja", label: "Caja", icon: Wallet, testid: "nav-item-caja", roles: ["admin"] },
+  { to: "/caja", label: "Caja", icon: Wallet, testid: "nav-item-caja", roles: ["admin", "cajero"] },
   { to: "/historico", label: "Histórico", icon: History, testid: "nav-item-historico", roles: ["admin"] },
   { to: "/actividad", label: "Actividad", icon: Activity, testid: "nav-item-actividad", roles: ["admin"] },
 ];

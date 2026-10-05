@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import api, { fmtEUR, catLabel } from "@/lib/api";
+import api, { fmtEUR, catLabel, fmtQty } from "@/lib/api";
 import { Package, Search, LayoutGrid, List } from "lucide-react";
 
 export default function Productos() {
@@ -89,7 +89,7 @@ export default function Productos() {
                   {fmtEUR(p.price)}<span className="text-xs font-semibold text-slate-400">/{p.unit}</span>
                 </p>
                 <p className={`font-mono-num text-sm font-bold ${p.stock <= 0 ? "text-red-600" : p.stock < 10 ? "text-amber-600" : "text-slate-700"}`}>
-                  {p.stock}{p.unit}
+                  {fmtQty(p.stock)}{p.unit}
                 </p>
               </div>
             </div>
@@ -122,7 +122,7 @@ export default function Productos() {
                   <td className="px-4 py-3 capitalize text-slate-600">{catLabel(categories, p.category)}</td>
                   <td className="px-4 py-3 text-right font-mono-num font-bold text-slate-900">{fmtEUR(p.price)}/{p.unit}</td>
                   <td className={`px-4 py-3 text-right font-mono-num font-bold ${p.stock <= 0 ? "text-red-600" : p.stock < 10 ? "text-amber-600" : "text-slate-900"}`}>
-                    {p.stock}{p.unit}
+                    {fmtQty(p.stock)}{p.unit}
                   </td>
                   <td className="px-4 py-3 text-center">
                     <span className={p.active ? "badge-active" : "badge-inactive"} data-testid={`product-status-${p.id}`}>

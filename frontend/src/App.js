@@ -4,6 +4,7 @@ import { AuthProvider, useAuth } from "@/context/AuthContext";
 import { Toaster } from "@/components/ui/sonner";
 import { Citrus } from "lucide-react";
 import Login from "@/pages/Login";
+import AltaPublica from "@/pages/AltaPublica";
 import Layout from "@/components/Layout";
 import Dashboard from "@/pages/Dashboard";
 import POS from "@/pages/POS";
@@ -44,6 +45,7 @@ function App() {
         <BrowserRouter>
           <Routes>
             <Route path="/login" element={<Login />} />
+            <Route path="/alta" element={<AltaPublica />} />
             <Route
               path="/"
               element={
@@ -59,7 +61,7 @@ function App() {
               <Route path="productos" element={<Navigate to="/" replace />} />
               <Route path="socios/:id" element={<SocioFicha />} />
               <Route path="usuarios" element={<Usuarios />} />
-              <Route path="caja" element={<AdminOnly><Caja /></AdminOnly>} />
+              <Route path="caja" element={<Caja />} />
               <Route path="historico" element={<AdminOnly><Historico /></AdminOnly>} />
               <Route path="actividad" element={<AdminOnly><Actividad /></AdminOnly>} />
             </Route>

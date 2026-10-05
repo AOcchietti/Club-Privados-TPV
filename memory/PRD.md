@@ -45,6 +45,17 @@ Decisiones del usuario: sistema de ventas con venta de productos, creación/modi
 - Vista Fotos/Lista también en Gestión de productos (cuadrícula con fotos grandes y acciones de editar/activar/eliminar).
 - Cobro únicamente desde el saldo del socio: el TPV exige asignar socio, muestra "saldo tras la compra" (rojo si queda en negativo) y permite deuda. El saldo negativo se refleja en la ficha del socio (tarjeta roja "Deuda pendiente"), en el registro de actividad (marca DEUDA con saldo resultante) y en Caja (tarjeta "Deuda de socios" + "Ventas con saldo" + "Recargas del turno"). Histórico simplificado: todas las ventas son con saldo.
 
+## Implementado (05/10/2026, iteración 5 — versión de Emergent portada a GitHub)
+Frontend copiado tal cual de la preview de Emergent; backend reconstruido a partir de las llamadas del frontend.
+- Caja por turnos (uno activo por local, índice único `active_lock`): estados opening → open → closing → closed. Cajeros y admin pueden abrir; solo el responsable del turno o un admin lo operan; cancelar apertura/cierre es solo admin y queda auditado.
+- Recuento de stock por secciones (categorías) al abrir y al cerrar (colección `stocktakes`, control de versión optimista, autorrelleno por sección o producto). Las diferencias se registran pero no ajustan el stock del sistema. Cierre en 3 pasos: arqueo de efectivo → recuento → revisión. Informe de turno (`GET /cash/sessions/{id}`).
+- Ventas fuera de turno: sin turno abierto se puede vender; el saldo se descuenta al momento y el stock queda reservado hasta la siguiente apertura, que las incorpora y descuenta su stock antes del recuento. Durante apertura/cierre se pausan ventas, recargas y ajustes de stock.
+- Inventario: el stock ya no se edita en la ficha; entradas, mermas y ajustes con motivo obligatorio (`POST /products/{id}/stock`, historial en `stock_movements`). Alta de producto con stock inicial; la unidad no cambia tras el alta.
+- Recargas solo en efectivo y solo con turno abierto; entran en el arqueo.
+- Equipo con nº de socio y saldo propios (pueden recargar y comprar). Migración automática al arrancar (nº de socio para todos, `dni` → `doc_type` + `doc_number`).
+- Alta pública con QR (`/alta`, sin login): datos, foto del documento, foto facial, firma y aceptación del acuerdo legal (PDF subido por admin). Exige mayoría de edad y documento no repetido; el socio queda "pendiente" y no se le puede dispensar hasta activarlo. Subidas públicas y altas limitadas por IP.
+- Nuevas dependencias backend: `segno` (QR).
+
 ## Backlog priorizado
 - P0: nada bloqueante pendiente.
 - P1: impresión/exportación de tickets y cierres (PDF/Z-report); límites de dispensación por socio/día (normativa CSC); caducidad de membresía con avisos; vista de socios con deuda (filtro en lista de socios).
