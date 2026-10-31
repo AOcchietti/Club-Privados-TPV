@@ -13,6 +13,8 @@ from urllib.parse import urlparse
 from playwright.sync_api import sync_playwright
 
 GHA = os.environ.get("GITHUB_ACTIONS") == "true"
+# Las fotos de los 10 productos de ejemplo se enlazan desde Pexels. Desaparecen al subir fotos propias desde Gestión.
+FOTOS_DE_EJEMPLO = {"images.pexels.com"}
 
 
 def main(base):
@@ -57,8 +59,10 @@ def main(base):
         check(True, "pantalla de Gestión")
         page.screenshot(path="tpv-navegador.png", full_page=True)
 
-        terceros = sorted(h for h in hosts if h and h != host)
-        check(not terceros, f"ninguna petición a terceros ({terceros or 'solo ' + host})")
+        terceros = sorted(h for h in hosts if h and h != host and h not in FOTOS_DE_EJEMPLO)
+        check(not terceros, f"ninguna petición a terceros salvo las fotos de ejemplo ({terceros or 'solo ' + host})")
+        if hosts & FOTOS_DE_EJEMPLO:
+            print("  · aviso: las fotos de los productos de ejemplo se cargan desde Pexels")
         check(not errors, f"sin errores de JavaScript ({errors[:2]})")
         browser.close()
     return len(checks)
