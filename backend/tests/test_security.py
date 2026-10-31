@@ -104,6 +104,8 @@ async def main():
     await err(S.get_current_user(req()), 401, "no autenticado")
     ok = await S.get_current_user(req(token(cajero["id"])))
     check(ok["email"] == "cajero@weedlemon.es", "token válido aceptado")
+    yo = await S.me(user=ok)  # lo que pide la app al recargar la página
+    check(yo["id"] == cajero["id"] and "password_hash" not in yo and "_id" not in yo, "/auth/me responde con la sesión actual (antes daba error 500)")
     check((await S.get_current_user(req(bearer=token(cajero["id"]))))["id"] == cajero["id"], "token por cabecera Bearer")
     await err(S.get_current_user(req(token(cajero["id"], minutes=-1))), 401, "expirada")
     await err(S.get_current_user(req(token(cajero["id"], secret="otra-clave-que-no-es-la-buena-0000000"))), 401, "inválido")

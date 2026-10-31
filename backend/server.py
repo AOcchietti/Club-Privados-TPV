@@ -117,7 +117,8 @@ def ser(doc):
     if not doc:
         return None
     d = dict(doc)
-    d["id"] = str(d.pop("_id"))
+    if "_id" in d:  # el usuario de la sesión ya llega con "id" (get_current_user quita el _id)
+        d["id"] = str(d.pop("_id"))
     for k, v in list(d.items()):
         if isinstance(v, datetime):
             d[k] = v.isoformat()
