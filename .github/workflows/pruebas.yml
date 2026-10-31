@@ -14,15 +14,8 @@ permissions:
 jobs:
   backend:
     name: Backend con MongoDB real
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 25
-    services:
-      mongo:
-        image: mongo:8
-        ports: ["27017:27017"]
-        options: >-
-          --health-cmd "mongosh --quiet --eval 'db.runCommand({ping:1})'"
-          --health-interval 5s --health-timeout 5s --health-retries 30
     env:
       MONGO_URL: mongodb://localhost:27017
       DB_NAME: tpv_e2e
@@ -32,8 +25,18 @@ jobs:
       ADMIN_EMAIL: admin@weedlemon.es
       ADMIN_PASSWORD: admin123
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - name: MongoDB 8 (la misma versión que el plan gratis de Atlas)
+        run: |
+          docker run -d --name mongo -p 27017:27017 mongo:8
+          for i in $(seq 60); do docker exec mongo mongosh --quiet --eval 'db.runCommand({ping:1}).ok' 2>/dev/null | grep -q 1 && break; sleep 2; done
+          if ! v=$(docker exec mongo mongosh --quiet --eval 'db.version()' 2>/dev/null); then
+            docker logs mongo 2>&1 | tail -40
+            echo "::error title=MongoDB no arranca::$(docker logs mongo 2>&1 | tail -6 | tr '\n' ' ' | cut -c1-800)"
+            exit 1
+          fi
+          echo "::notice title=MongoDB::versión $v"
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
       - name: Instalar dependencias reales
@@ -86,17 +89,20 @@ jobs:
 
   despliegue:
     name: Imagen de despliegue + navegador real
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 35
-    services:
-      mongo:
-        image: mongo:8
-        ports: ["27017:27017"]
-        options: >-
-          --health-cmd "mongosh --quiet --eval 'db.runCommand({ping:1})'"
-          --health-interval 5s --health-timeout 5s --health-retries 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
+      - name: MongoDB 8 (la misma versión que el plan gratis de Atlas)
+        run: |
+          docker run -d --name mongo -p 27017:27017 mongo:8
+          for i in $(seq 60); do docker exec mongo mongosh --quiet --eval 'db.runCommand({ping:1}).ok' 2>/dev/null | grep -q 1 && break; sleep 2; done
+          if ! v=$(docker exec mongo mongosh --quiet --eval 'db.version()' 2>/dev/null); then
+            docker logs mongo 2>&1 | tail -40
+            echo "::error title=MongoDB no arranca::$(docker logs mongo 2>&1 | tail -6 | tr '\n' ' ' | cut -c1-800)"
+            exit 1
+          fi
+          echo "::notice title=MongoDB::versión $v"
       - name: Construir la imagen (frontend + API)
         run: docker build -t tpv-demo .
       - name: Arrancar como en producción (HTTPS off solo porque es localhost)
@@ -121,7 +127,7 @@ jobs:
           if curl -s --path-as-is 'http://localhost:8080/static/../../backend/server.py' | grep -q 'from fastapi'; then echo "::error::se puede leer el código del servidor"; exit 1; fi
           if curl -sf http://localhost:8080/ | grep -qiE 'googleapis|posthog|emergent'; then echo "::error::la página carga recursos de terceros"; exit 1; fi
           echo "::notice title=Imagen de despliegue::frontend y API servidos juntos desde un solo contenedor"
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
       - name: Herramientas de prueba
@@ -151,11 +157,11 @@ jobs:
 
   frontend:
     name: Dependencias del frontend (informativo)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
         with:
           node-version: "20"
       - name: npm audit de lo que llega al navegador
