@@ -71,6 +71,11 @@ Frontend copiado tal cual de la preview de Emergent; backend reconstruido a part
 - Auditoría de seguridad (tríada CIA) con 18 correcciones: ver `docs/AUDITORIA_SEGURIDAD.md`. Destacan el fallo permanente del login tras 5 intentos, la protección CSRF (cabecera `X-Requested-With` obligatoria), solo imágenes reales en las subidas, la eliminación de la analítica de Emergent con grabación de sesiones, las ventas atómicas, la protección del stock vendido fuera de turno y los datos de ejemplo solo en el primer arranque.
 - Batería de pruebas en `backend/tests` (`python tests/run_all.py`): funcionales, seguridad, invariantes con simulación aleatoria y mutación.
 
+## Implementado (31/10/2026, iteración 8 · rama `demo`)
+- PDF de cierre: en productos por gramos solo salen los descuadres de 1 g o más si el producto cuesta menos de 15 Cr/g, y de 0,5 g o más si cuesta 15 Cr/g o más (15 cuenta como caro). En productos por unidades sale cualquier diferencia. El PDF dice cuántas diferencias pequeñas no muestra y explica el criterio al pie. El recuento guarda el precio de cada producto; los recuentos antiguos usan el precio actual.
+- Catálogo de comida y bebida: categorías "Refrescos" (Coca-Cola, Coca-Cola Zero, Fanta Naranja y Limón, Sprite, Aquarius, Nestea, agua) y "Dulces y snacks" (Kinder Bueno, Bueno White, Country, Delice, Twix, Snickers, KitKat, Chupa Chups), por unidades y con ilustraciones propias sin logotipos (`backend/demo_catalog.py`). Se añaden una sola vez al arrancar, también en bases ya existentes (marca `catalog_food_drinks_v1` en `settings`): lo que se borre o cambie después no se vuelve a crear.
+- Productos por unidades: solo cantidades enteras en ventas, entradas/mermas/ajustes, stock inicial y recuentos (el TPV redondea hacia abajo y el botón + ya no pasa del stock disponible).
+
 ## Backlog priorizado
 - P0: nada bloqueante pendiente.
 - P1: impresión/exportación de tickets y cierres (PDF/Z-report); límites de dispensación por socio/día (normativa CSC); caducidad de membresía con avisos; vista de socios con deuda (filtro en lista de socios).

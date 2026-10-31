@@ -31,6 +31,14 @@ MUTATIONS = [
      '"cash_session_id": sid, "absorbed_at": now_utc()}})'),
     ("Se permite vender más de lo que hay en stock",
      '        if available < qty - 1e-9:', '        if False:'),
+    ("Se venden y se mueven fracciones de productos por unidades",
+     '    if product.get("unit") == "ud" and not is_whole(qty):', '    if False:'),
+    ("El PDF trata igual los productos caros y los baratos",
+     'return GRAM_MIN_PREMIUM if price >= PREMIUM_PRICE else GRAM_MIN_CHEAP', 'return GRAM_MIN_CHEAP',
+     "test_flows.py", "cierre_pdf.py"),
+    ("El PDF no oculta las diferencias pequeñas",
+     '        return 1e-9\n    price = line.get("price")', '        return 1e-9\n    return 1e-9\n    price = line.get("price")',
+     "test_flows.py", "cierre_pdf.py"),
     # --- mutaciones de seguridad: se comprueban con test_security.py ---
     ("[seguridad] Sin protección CSRF",
      'if headers.get(b"x-requested-with", b"").lower() != b"xmlhttprequest":', 'if False:', "test_security.py"),
@@ -50,14 +58,16 @@ MUTATIONS = [
 
 def main():
     caught = 0
-    for name, old, new, *suite in MUTATIONS:
-        suite = suite[0] if suite else "test_invariants.py"
+    for name, old, new, *rest in MUTATIONS:
+        suite = rest[0] if rest else "test_invariants.py"
+        target = rest[1] if len(rest) > 1 else "server.py"
         tmp = tempfile.mkdtemp(prefix="tpv-mutante-")
-        for f in ("server.py", "cierre_pdf.py"):
-            shutil.copy(os.path.join(BACKEND, f), tmp)
-        src = open(os.path.join(tmp, "server.py"), encoding="utf-8").read()
+        for f in os.listdir(BACKEND):
+            if f.endswith(".py"):
+                shutil.copy(os.path.join(BACKEND, f), tmp)
+        src = open(os.path.join(tmp, target), encoding="utf-8").read()
         assert src.count(old) == 1, f"la mutación «{name}» ya no encaja con el código"
-        open(os.path.join(tmp, "server.py"), "w", encoding="utf-8").write(src.replace(old, new))
+        open(os.path.join(tmp, target), "w", encoding="utf-8").write(src.replace(old, new))
         env = dict(os.environ, TPV_BACKEND_DIR=tmp)
         args = ["1", "2", "3"] if suite == "test_invariants.py" else []
         res = subprocess.run([sys.executable, os.path.join(HERE, suite), *args],

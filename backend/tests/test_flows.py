@@ -101,7 +101,9 @@ async def main():
     line = next(l for l in st["lines"] if l["product_id"] == pid)
     check(line["expected"] == 1 and line["counted"] is None, "esperado tras absorber")
     check(set(st["sections"]) == {l["category_label"] for l in st["lines"]}, "secciones = categorías")
-    expected_order = ["Flor Índica", "Flor Sativa", "Marihuana medicinal", "Hash", "Extracto", "Dry Sift", "Polen", "Accesorio", "Comestible"]
+    expected_order = ["Flor Índica", "Flor Sativa", "Marihuana medicinal", "Hash", "Extracto", "Dry Sift", "Polen", "Accesorio", "Comestible",
+                      "Dulces y snacks", "Refrescos"]
+    check(all(l.get("price") is not None for l in st["lines"]), "el recuento guarda el precio de cada producto")
     check(st["sections"] == expected_order, f"orden de secciones {st['sections']}")
     line_sections = []
     for l in st["lines"]:
@@ -322,6 +324,51 @@ async def main():
 
     stats = await S.dashboard_stats(user=admin)
     check(stats["today_count"] >= 5, "panel")
+
+    # ----- PDF: umbrales de descuadre (gramos: 1 g si < 15 Cr/g, 0,5 g si >= 15 Cr/g; unidades: cualquiera) -----
+    from cierre_pdf import build_closing_pdf
+    L = lambda name, unit, price, diff: {"product_id": name, "name": name, "unit": unit, "price": price, "category_label": "X",  # noqa: E731
+                                         "expected": 10, "counted": 10 + diff, "difference": diff}
+    st_test = {"finalized_by": "Prueba", "lines": [
+        L("BaratoMenos1g", "g", 9, -0.8), L("BaratoUnGramo", "g", 9, -1.0), L("BaratoMas", "g", 14.99, 1.5),
+        L("CaroMedioGramo", "g", 15, -0.5), L("CaroMenosMedio", "g", 25, 0.4), L("UnidadSuelta", "ud", 2, -1),
+        L("SinPrecioGuardado", "g", None, 0.6)]}
+    body = build_closing_pdf({"opened_by": "P", "starting_amount": 0}, [], [], [], st_test, None,
+                             prices={"SinPrecioGuardado": 30})
+    for name in ["BaratoUnGramo", "BaratoMas", "CaroMedioGramo", "UnidadSuelta", "SinPrecioGuardado"]:
+        check(f"({name}".encode() in body, f"el PDF muestra el descuadre de {name}")
+    for name in ["BaratoMenos1g", "CaroMenosMedio"]:
+        check(f"({name}".encode() not in body, f"el PDF oculta la diferencia pequeña de {name}")
+    check(b"5 descuadres" in body and b"2 diferencias peque" in body, "el PDF dice cuántas diferencias pequeñas no muestra")
+    check(b"/Count 1" in body, "sigue en una sola página")
+
+    # ----- catálogo de refrescos y dulces -----
+    cats = {c["key"]: c for c in await S.list_categories(user=admin)}
+    check("refrescos" in cats and "dulces" in cats, "categorías Refrescos y Dulces creadas")
+    drinks = [p for p in await S.list_products(q=None, category="refrescos", active_only=True, user=cajero)]
+    sweets = [p for p in await S.list_products(q=None, category="dulces", active_only=True, user=cajero)]
+    check(len(drinks) == 8 and len(sweets) == 8, f"8 refrescos y 8 dulces ({len(drinks)}/{len(sweets)})")
+    check(all(p["unit"] == "ud" and p["image_url"].startswith("data:image/svg+xml") for p in drinks + sweets), "por unidades y con ilustración")
+    coke = next(p for p in drinks if p["name"] == "Coca-Cola")
+    await S.delete_product(coke["id"], user=admin)
+    await S.startup()
+    check(not await db.products.find_one({"name": "Coca-Cola"}), "un refresco borrado no reaparece al reiniciar")
+    check(await db.products.count_documents({"name": "Fanta Naranja"}) == 1, "no se duplican al reiniciar")
+
+    # ----- productos por unidades: solo cantidades enteras -----
+    fanta = next(p for p in drinks if p["name"] == "Fanta Naranja")
+    socio_ud = next(u for u in await S.list_users(role="socio", q=None, user=admin) if u.get("status") == "activa")
+    await expect_error(S.create_sale(S.SaleCreate(items=[S.SaleItemIn(product_id=fanta["id"], qty=0.5)], socio_id=socio_ud["id"]), user=cajero),
+                       400, "número entero")  # no se vende media lata
+    await expect_error(S.create_sale(S.SaleCreate(items=[S.SaleItemIn(product_id=fanta["id"], qty=0.5),
+                                                          S.SaleItemIn(product_id=fanta["id"], qty=0.5)], socio_id=socio_ud["id"]), user=cajero),
+                       400, "número entero")  # ni dos medias latas en líneas separadas
+    await expect_error(S.stock_movement(fanta["id"], S.StockMoveIn(type="entrada", qty=1.5, reason=""), user=cajero),
+                       400, "número entero")  # entrada de stock con decimales
+    await expect_error(S.create_product(S.ProductCreate(name="Lata rara", category="refrescos", price=2, unit="ud", initial_stock=2.5), user=admin),
+                       400, "entero")  # stock inicial con decimales
+    ok_sale = await S.create_sale(S.SaleCreate(items=[S.SaleItemIn(product_id=fanta["id"], qty=2)], socio_id=socio_ud["id"]), user=cajero)
+    check(ok_sale["total"] == 4.0, "2 latas a 2 Cr = 4 Cr")
 
     # ----- reglas añadidas en la auditoría -----
     await expect_error(S.list_sales(range="all", payment=None, socio_id=None, user=cajero), 403, "administración")

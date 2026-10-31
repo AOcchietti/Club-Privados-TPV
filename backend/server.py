@@ -25,6 +25,7 @@ from pydantic import BaseModel
 from pymongo.errors import DuplicateKeyError
 
 from cierre_pdf import build_closing_pdf, as_local
+from demo_catalog import FOOD_DRINK_CATEGORIES, FOOD_DRINK_PRODUCTS
 
 mongo_url = os.environ["MONGO_URL"]
 client = AsyncIOMotorClient(mongo_url)
@@ -179,6 +180,16 @@ ACTIVE_STATUSES = ["opening", "open", "closing"]
 STATUS_TEXT = {"opening": "en apertura (recuento de stock)", "open": "abierta", "closing": "en proceso de cierre"}
 USER_STATUSES = ["activa", "pendiente", "expirada", "suspendida"]
 MAX_QTY = 1_000_000  # tope de cordura para cantidades de stock
+
+
+def is_whole(qty: float) -> bool:
+    return abs(qty - round(qty)) < 1e-9
+
+
+def require_whole_units(product: dict, qty: float):
+    """Los productos por unidades (latas, chocolatinas, accesorios…) no se fraccionan."""
+    if product.get("unit") == "ud" and not is_whole(qty):
+        raise HTTPException(status_code=400, detail=f"«{product['name']}» va por unidades: la cantidad tiene que ser un número entero")
 DOC_TYPES = ["DNI", "NIE", "Pasaporte", "Otro"]
 
 
@@ -994,6 +1005,8 @@ async def create_product(body: ProductCreate, user: dict = Depends(require_staff
         raise HTTPException(status_code=400, detail="Unidad no válida")
     if body.initial_stock < 0:
         raise HTTPException(status_code=400, detail="El stock inicial no puede ser negativo")
+    if body.unit == "ud" and not is_whole(body.initial_stock):
+        raise HTTPException(status_code=400, detail="Un producto por unidades necesita un stock inicial entero")
     doc = body.model_dump(exclude={"initial_stock"})
     doc["name"] = doc["name"].strip()
     doc["stock"] = round(body.initial_stock, 3)
@@ -1035,6 +1048,7 @@ async def stock_movement(product_id: str, body: StockMoveIn, user: dict = Depend
         raise HTTPException(status_code=404, detail="Producto no encontrado")
     if abs(body.qty) > MAX_QTY:
         raise HTTPException(status_code=400, detail="Cantidad fuera de rango")
+    require_whole_units(product, body.qty)
     if body.type in ("entrada", "merma"):
         if body.qty <= 0:
             raise HTTPException(status_code=400, detail="La cantidad tiene que ser mayor que 0")
@@ -1144,6 +1158,9 @@ async def create_sale(body: SaleCreate, user: dict = Depends(require_staff)):
         if available < qty - 1e-9:
             raise HTTPException(status_code=400, detail=f"Stock insuficiente de «{product['name']}» (quedan {max(available, 0)}{product['unit']})")
         products[pid] = product
+
+    for item in body.items:
+        require_whole_units(products[item.product_id], item.qty)
 
     lines = []
     total = 0.0
@@ -1309,6 +1326,7 @@ async def build_stocktake(session: dict, kind: str, user: dict) -> dict:
             "category": p.get("category"),
             "category_label": cats.get(p.get("category"), p.get("category") or "Sin categoría"),
             "expected": round(p.get("stock", 0) or 0, 3),
+            "price": p.get("price"),  # para decidir qué descuadres salen en el PDF
             "counted": None,
             "difference": None,
         })
@@ -1595,6 +1613,8 @@ async def cash_stocktake_line(body: StocktakeLineIn, user: dict = Depends(requir
     line = next((l for l in lines if l["product_id"] == body.product_id), None)
     if not line:
         raise HTTPException(status_code=404, detail="Ese producto no está en el recuento")
+    if body.counted is not None and line.get("unit") == "ud" and not is_whole(body.counted):
+        raise HTTPException(status_code=400, detail=f"«{line['name']}» va por unidades: cuenta un número entero")
     set_counted(line, body.counted)
     return await save_stocktake_lines(st, lines, body.version)
 
@@ -1714,7 +1734,8 @@ async def cash_session_pdf(session_id: str, user: dict = Depends(require_staff))
     movements = await db.cash_movements.find({"session_id": sid}).to_list(2000)
     opening = await db.stocktakes.find_one({"session_id": sid, "kind": "opening", "status": "final"})
     closing = await db.stocktakes.find_one({"session_id": sid, "kind": "closing", "status": "final"})
-    pdf = build_closing_pdf(session, sales, recharges, movements, opening, closing)
+    prices = {str(p["_id"]): p.get("price") for p in await db.products.find().to_list(10000)}
+    pdf = build_closing_pdf(session, sales, recharges, movements, opening, closing, prices=prices)
     closed = as_local(session.get("closed_at"))
     filename = f"cierre-turno-{closed.strftime('%Y-%m-%d-%H%M') if closed else sid}.pdf"
     await log_activity(user, "caja_pdf", f"Descarga del resumen de cierre del turno de {session.get('opened_by')}")
@@ -1820,6 +1841,23 @@ SEED_SOCIOS = [
 ]
 
 
+async def seed_food_and_drinks():
+    """Añade una sola vez las categorías Refrescos y Dulces con sus productos (también a bases ya existentes).
+    Si luego se borran, no vuelven a aparecer."""
+    if await db.settings.find_one({"key": "catalog_food_drinks_v1"}):
+        return
+    for c in FOOD_DRINK_CATEGORIES:
+        if not await db.categories.find_one({"key": c["key"]}):
+            await db.categories.insert_one({**c, "created_at": now_utc()})
+    added = 0
+    for p in FOOD_DRINK_PRODUCTS:
+        if not await db.products.find_one({"name": p["name"]}):
+            await db.products.insert_one({**p, "created_at": now_utc()})
+            added += 1
+    await db.settings.update_one({"key": "catalog_food_drinks_v1"}, {"$set": {"at": now_utc(), "products": added}}, upsert=True)
+    logger.info("Catálogo de refrescos y dulces añadido (%s productos)", added)
+
+
 async def migrate():
     """Migraciones idempotentes para bases de datos de versiones anteriores."""
     # Todo usuario (también el equipo) tiene nº de socio y saldo.
@@ -1900,6 +1938,7 @@ async def startup():
         logger.info("Categorías por defecto creadas")
 
     await db.settings.update_one({"key": "seeded"}, {"$setOnInsert": {"key": "seeded", "at": now_utc()}}, upsert=True)
+    await seed_food_and_drinks()
     await migrate()
     try:
         await db.cash_sessions.create_index("active_lock", unique=True, sparse=True)

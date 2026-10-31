@@ -7,8 +7,8 @@ Rama `demo` · 31/10/2026
 - **18 problemas encontrados y corregidos**: 4 de gravedad alta, 6 media y 8 baja. La tabla con todos está más abajo.
 - **El más grave**: al quinto intento de contraseña fallido, el login daba un error interno, y lo seguía dando para siempre para esa persona desde esa conexión. Venía del código original.
 - **Datos personales**: la aplicación enviaba grabaciones de pantalla a un servicio de analítica de Emergent, incluido el formulario de alta. Se ha eliminado.
-- **Pruebas automáticas**: cuatro bloques en `backend/tests` que hacen **más de 2,1 millones de comprobaciones** y pasan todas. Se repiten con `python tests/run_all.py`.
-- **Las propias pruebas están verificadas**: se metieron **13 errores a propósito** en copias del servidor y las pruebas detectaron los 13.
+- **Pruebas automáticas**: cuatro bloques en `backend/tests` que hacen **más de 3,8 millones de comprobaciones** y pasan todas. Se repiten con `python tests/run_all.py`.
+- **Las propias pruebas están verificadas**: se metieron **16 errores a propósito** en copias del servidor y las pruebas detectaron los 16.
 
 ## Alcance y método
 
@@ -30,7 +30,7 @@ Cada riesgo se ha clasificado según la **tríada CIA**:
    - Lectura de todas las rutas de la API.
    - Mapa automático de quién puede llamar a cada una, obtenido del propio código.
    - Búsqueda de patrones peligrosos: ejecución de código, consultas sin escapar, secretos escritos en el repositorio.
-2. **Pruebas funcionales de punta a punta** (`test_flows.py`, 174 comprobaciones). Recorren los procesos reales en orden: productos, inventario, ventas y recargas con y sin turno, apertura, recuento, cierre, PDF, alta pública con QR, usuarios y migración de datos antiguos.
+2. **Pruebas funcionales de punta a punta** (`test_flows.py`, 198 comprobaciones). Recorren los procesos reales en orden: productos, inventario, ventas y recargas con y sin turno, apertura, recuento, cierre, PDF (incluidos los umbrales de descuadre), catálogo de refrescos y dulces, cantidades enteras en productos por unidades, alta pública con QR, usuarios y migración de datos antiguos.
 3. **Pruebas de seguridad por la tríada CIA** (`test_security.py`, 145 comprobaciones).
    - **Confidencialidad**:
      - Control de acceso de las 52 rutas.
@@ -50,9 +50,9 @@ Cada riesgo se ha clasificado según la **tríada CIA**:
      - Archivos enormes.
      - Búsquedas diseñadas para colgar el servidor (ReDoS).
      - Dos turnos abiertos a la vez.
-4. **Pruebas de consistencia con simulación aleatoria** (`test_invariants.py`, unos 2,1 millones de comprobaciones).
+4. **Pruebas de consistencia con simulación aleatoria** (`test_invariants.py`, unos 3,8 millones de comprobaciones).
    - Se simulan **7.500 operaciones al azar** en 5 escenarios distintos, como muchos días de trabajo en el club. Unos 170 turnos abiertos y cerrados, recuentos que no cuadran, cancelaciones, mermas, productos desactivados, ventas y recargas fuera de turno, y "ataques" a la consistencia.
-   - **Después de cada operación** se comprueban 10 reglas que nunca pueden romperse:
+   - **Después de cada operación** se comprueban 11 reglas que nunca pueden romperse:
      - Un solo turno activo.
      - Nunca stock negativo.
      - El libro de stock y el de saldos cuadran al céntimo.
@@ -62,9 +62,10 @@ Cada riesgo se ha clasificado según la **tríada CIA**:
      - Los recuentos finales están completos.
      - Lo disponible nunca es negativo.
      - El efectivo esperado nunca es negativo.
+     - Los productos por unidades (latas, chocolatinas…) nunca tienen stock ni ventas con decimales.
 5. **Pruebas de mutación** (`test_mutations.py`). Comprueban que las pruebas sirven:
-   - Se introducen 13 errores típicos en copias del servidor. Por ejemplo: "la venta no descuenta el saldo", "sin protección CSRF" o "se aceptan SVG".
-   - Las pruebas deben fallar con cada uno, y detectaron **13 de 13**.
+   - Se introducen 16 errores típicos en copias del servidor. Por ejemplo: "la venta no descuenta el saldo", "sin protección CSRF", "se aceptan SVG" o "el PDF trata igual los productos caros y los baratos".
+   - Las pruebas deben fallar con cada uno, y detectaron **16 de 16**.
    - Gracias a esto se encontró y cerró un hueco de las propias pruebas: no comprobaban mermas que se comieran stock ya vendido fuera de turno.
 6. **Pruebas de interfaz**:
    - Compilación completa del frontend.

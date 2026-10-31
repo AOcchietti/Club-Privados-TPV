@@ -16,6 +16,7 @@ Lo importante es que DESPUÉS DE CADA OPERACIÓN se cumplen siempre estas reglas
   I8  Como mucho un recuento en borrador por turno y tipo; los recuentos finales están completos.
   I9  "available" = stock − lo vendido fuera de turno pendiente, y nunca es negativo.
   I10 El efectivo esperado de un turno abierto nunca es negativo.
+  I11 Los productos por unidades (latas, chocolatinas…) nunca tienen stock ni ventas con decimales.
 """
 import asyncio
 import random
@@ -111,6 +112,15 @@ async def check_invariants(base_stock, step):
     for pid, p in products.items():
         CHK(p["stock"] - reserved.get(pid, 0) >= -1e-3, f"I9 available negativo en {p['name']} {where}")
 
+    whole = lambda x: abs(x - round(x)) < 1e-9  # noqa: E731
+    for pid, p in products.items():
+        if p.get("unit") == "ud":
+            CHK(whole(p["stock"]), f"I11 stock con decimales en {p['name']}: {p['stock']} {where}")
+    for s_ in sales:
+        for it in s_["items"]:
+            if it.get("unit") == "ud":
+                CHK(whole(it["qty"]), f"I11 venta de {it['qty']} ud de {it['name']} {where}")
+
 
 async def simulate(seed, steps):
     rnd = random.Random(seed)
@@ -148,7 +158,11 @@ async def simulate(seed, steps):
             if op < 0.30:  # venta
                 items = []
                 for p in rnd.sample(prods(), k=min(len(prods()), rnd.randint(1, 3))):
-                    items.append(S.SaleItemIn(product_id=str(p["_id"]), qty=rnd.choice([0.5, 1, 2, 3.5, 7])))
+                    if p.get("unit") == "ud":  # de vez en cuando se intenta vender media lata: debe rechazarse
+                        qty = rnd.choice([1, 1, 2, 3, 0.5 if rnd.random() < 0.15 else 1])
+                    else:
+                        qty = rnd.choice([0.5, 1, 2, 3.5, 7])
+                    items.append(S.SaleItemIn(product_id=str(p["_id"]), qty=qty))
                 socio = rnd.choice(members())
                 await S.create_sale(S.SaleCreate(items=items, socio_id=str(socio["_id"])), user=actor)
             elif op < 0.42:  # recarga
@@ -161,13 +175,15 @@ async def simulate(seed, steps):
                     pid = rnd.choice(list(reserved))
                     p = next((x for x in prods() if str(x["_id"]) == pid), None)
                     if p is not None:
-                        eat = round(p["stock"] - reserved[pid] + 0.5, 3)
+                        eat = round(p["stock"] - reserved[pid] + (1 if p.get("unit") == "ud" else 0.5), 3)
                         if eat > 0:
                             await S.stock_movement(pid, S.StockMoveIn(type="merma", qty=eat, reason="prueba"), user=actor)
                 else:
                     p = rnd.choice(prods())
                     t = rnd.choice(["entrada", "merma", "ajuste"])
                     qty = rnd.choice([1, 2, 5, 20]) if t != "ajuste" else rnd.choice([-5, -1, 1, 3])
+                    if rnd.random() < 0.05:
+                        qty += 0.5  # en productos por unidades debe rechazarse
                     await S.stock_movement(str(p["_id"]), S.StockMoveIn(type=t, qty=qty, reason="prueba" if t != "entrada" else ""), user=actor)
             elif op < 0.58:  # movimiento de caja
                 await S.cash_movement(S.CashMovementIn(type=rnd.choice(["in", "out"]), amount=rnd.choice([5, 20, 80, 500]), reason="prueba"), user=actor)
@@ -183,7 +199,8 @@ async def simulate(seed, steps):
                     else:
                         st = S.ser(st)
                         for line in st["lines"]:
-                            counted = line["expected"] if rnd.random() < 0.8 else max(0, line["expected"] + rnd.choice([-2, -0.5, 1]))
+                            deltas = [-2, -1, 1] if line["unit"] == "ud" else [-2, -0.5, 1]
+                            counted = line["expected"] if rnd.random() < 0.8 else max(0, line["expected"] + rnd.choice(deltas))
                             st = await S.cash_stocktake_line(S.StocktakeLineIn(product_id=line["product_id"], counted=counted, version=st["version"]), user=actor)
                         if session["status"] == "opening":
                             await S.cash_opening_confirm(user=actor)
@@ -201,8 +218,10 @@ async def simulate(seed, steps):
                 p = rnd.choice(inactive) if inactive and rnd.random() < 0.7 else rnd.choice(prods())
                 await S.toggle_product(str(p["_id"]), user=actor)
             elif op < 0.90:  # producto nuevo
-                p = await S.create_product(S.ProductCreate(name=f"Nuevo {step}", category="sativa", price=rnd.choice([5, 8.5]), unit="g",
-                                                           initial_stock=rnd.choice([0, 3, 10])), user=actor)
+                unit = rnd.choice(["g", "ud"])
+                p = await S.create_product(S.ProductCreate(name=f"Nuevo {step}", category="sativa" if unit == "g" else "refrescos",
+                                                           price=rnd.choice([5, 8.5]) if unit == "g" else 2, unit=unit,
+                                                           initial_stock=rnd.choice([0, 3, 10, 2.5])), user=actor)
             elif op < 0.93:  # recuento con versión caducada (dos dispositivos a la vez)
                 if session and session["status"] in ("opening", "closing"):
                     st = await S.get_draft_stocktake(session)

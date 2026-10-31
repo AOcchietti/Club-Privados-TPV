@@ -237,14 +237,37 @@ def _rows_budget(available, needs, per_row):
     return alloc
 
 
-def _diffs(st):
+# Descuadres que se muestran en el PDF. En los productos a granel (gramos) se ignoran las diferencias
+# pequeñas: desde 1 g si el producto vale menos de 15 Cr/g, y desde 0,5 g si vale 15 Cr/g o más.
+# En los productos por unidades se muestra cualquier diferencia.
+PREMIUM_PRICE = 15.0
+GRAM_MIN_CHEAP = 1.0
+GRAM_MIN_PREMIUM = 0.5
+
+
+def diff_threshold(line: dict, prices: dict) -> float:
+    if line.get("unit") != "g":
+        return 1e-9
+    price = line.get("price")
+    if price is None:
+        price = prices.get(line.get("product_id"))
+    if price is None:
+        return GRAM_MIN_PREMIUM  # sin precio conocido: el criterio más estricto (se muestra más)
+    return GRAM_MIN_PREMIUM if price >= PREMIUM_PRICE else GRAM_MIN_CHEAP
+
+
+def _diffs(st, prices=None):
+    """Devuelve (descuadres a mostrar, nº de diferencias pequeñas que no se muestran)."""
     if not st:
-        return []
-    return [l for l in st.get("lines", []) if l.get("difference") is not None and abs(l["difference"]) > 1e-9]
+        return [], 0
+    prices = prices or {}
+    all_diffs = [l for l in st.get("lines", []) if l.get("difference") is not None and abs(l["difference"]) > 1e-9]
+    shown = [l for l in all_diffs if abs(l["difference"]) >= diff_threshold(l, prices) - 1e-9]
+    return shown, len(all_diffs) - len(shown)
 
 
 def build_closing_pdf(session: dict, sales: list, recharges: list, movements: list,
-                      opening_st, closing_st, club: str = "Weed Lemon Social Club") -> bytes:
+                      opening_st, closing_st, club: str = "Weed Lemon Social Club", prices: dict = None) -> bytes:
     pdf = Pdf("Resumen de cierre de turno")
     closed_local = as_local(session.get("closed_at"))
 
@@ -335,10 +358,10 @@ def build_closing_pdf(session: dict, sales: list, recharges: list, movements: li
     top = min(y_left, y_right) - 8
 
     # ----- Reparto del espacio restante -----
-    open_diffs, close_diffs = _diffs(opening_st), _diffs(closing_st)
+    (open_diffs, open_hidden), (close_diffs, close_hidden) = _diffs(opening_st, prices), _diffs(closing_st, prices)
     mov_overhead = 18 + 14 + (12 if movements else 0)      # título + cabecera + posible "y N más"
     stock_overhead = 18 + 26 + 12 + 12                      # título + resumen + cabecera + posible "y N más"
-    footnote = 14
+    footnote = 24
     available = top - CONTENT_BOTTOM - mov_overhead - stock_overhead - footnote
     mov_rows, stock_rows = _rows_budget(available, [len(movements), max(len(open_diffs), len(close_diffs))], [12, 11])
 
@@ -367,20 +390,25 @@ def build_closing_pdf(session: dict, sales: list, recharges: list, movements: li
     top = y - 6
 
     # ----- Fila 4: Recuentos de stock (apertura | cierre) -----
-    def stock_block(col, title, st, diffs):
+    def stock_block(col, title, st, diffs, hidden):
         x0, x1 = col
         yy = _section_title(pdf, x0, x1, top, title)
         if not st:
             pdf.text(x0, yy, "Sin recuento registrado.", 8.5, False, MUTED)
             return
         n = len(st.get("lines", []))
-        pdf.text(x0, yy, f"{n} productos contados · {len(diffs)} con diferencia", 8.5, True, RED if diffs else GREEN)
+        pdf.text(x0, yy, f"{n} productos contados · {len(diffs)} {'descuadre' if len(diffs) == 1 else 'descuadres'}", 8.5, True, RED if diffs else GREEN)
         yy -= 11
+        extra = []
         if st.get("finalized_by"):
-            pdf.text(x0, yy, f"Contado por {st['finalized_by']}", 8, False, MUTED)
+            extra.append(f"Contado por {st['finalized_by']}")
+        if hidden:
+            extra.append(f"{hidden} {'diferencia pequeña' if hidden == 1 else 'diferencias pequeñas'} sin mostrar")
+        if extra:
+            pdf.text(x0, yy, fit(" · ".join(extra), x1 - x0, 8), 8, False, MUTED)
         yy -= 15
         if not diffs:
-            pdf.text(x0, yy, "Todo coincide con el esperado.", 8.5, False, MUTED)
+            pdf.text(x0, yy, "Sin descuadres que mostrar.", 8.5, False, MUTED)
             return
         w = x1 - x0
         pdf.text(x0, yy, "Producto", 7.5, True, MUTED)
@@ -398,10 +426,13 @@ def build_closing_pdf(session: dict, sales: list, recharges: list, movements: li
         if len(diffs) > stock_rows:
             pdf.text(x0, yy, f"... y {len(diffs) - stock_rows} diferencias más", 7.5, False, MUTED)
 
-    stock_block(LEFT_COL, "Recuento de stock · apertura", opening_st, open_diffs)
-    stock_block(RIGHT_COL, "Recuento de stock · cierre", closing_st, close_diffs)
+    stock_block(LEFT_COL, "Recuento de stock · apertura", opening_st, open_diffs, open_hidden)
+    stock_block(RIGHT_COL, "Recuento de stock · cierre", closing_st, close_diffs, close_hidden)
 
     # Nota y pie
+    pdf.text(L0, CONTENT_BOTTOM + 2,
+             "Descuadres en gramos: desde 1 g (productos de menos de 15 Cr/g) o desde 0,5 g (15 Cr/g o más). En unidades, cualquier diferencia.",
+             7, False, MUTED)
     pdf.text(L0, CONTENT_BOTTOM - 8,
              "Lo contado pasa a ser el stock del sistema al confirmar cada recuento. Las ventas se cobran del saldo; el efectivo entra por las recargas.",
              7, False, MUTED)

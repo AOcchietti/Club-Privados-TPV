@@ -268,7 +268,7 @@ function StocktakeGrid({ stocktake, onUpdated, onNext, nextLabel }) {
                     </div>
                     <div className="flex items-center gap-1.5">
                       <input
-                        type="number" min="0" step="any" value={raw}
+                        type="number" min="0" step={l.unit === "ud" ? 1 : "any"} value={raw}
                         onChange={(e) => setCounts((c) => ({ ...c, [l.product_id]: e.target.value }))}
                         onBlur={() => saveLine(l)}
                         placeholder="contar…"

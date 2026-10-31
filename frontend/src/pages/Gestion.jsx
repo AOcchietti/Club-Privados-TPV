@@ -110,7 +110,7 @@ function ProductDialog({ open, onClose, product, categories, onSaved }) {
           ) : (
             <div>
               <label className="text-xs font-semibold uppercase tracking-wider text-slate-500 block mb-1">Stock inicial ({form.unit})</label>
-              <input type="number" step="0.5" min="0" value={form.stock} onChange={set("stock")} data-testid="product-stock-input" className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 focus:outline-none focus:ring-2 focus:ring-amber-400" />
+              <input type="number" step={form.unit === "ud" ? 1 : 0.5} min="0" value={form.stock} onChange={set("stock")} data-testid="product-stock-input" className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 focus:outline-none focus:ring-2 focus:ring-amber-400" />
             </div>
           )}
           <div>
@@ -262,7 +262,7 @@ function StockDialog({ product, open, onClose, onSaved }) {
         <label className="text-xs font-semibold uppercase tracking-wider text-slate-500">
           {type === "entrada" ? `Cantidad que entra (${product.unit})` : type === "merma" ? `Cantidad que sale (${product.unit})` : `Stock real contado (${product.unit})`}
         </label>
-        <input type="number" min="0" step="any" value={qty} onChange={(e) => setQty(e.target.value)} data-testid="stock-qty-input"
+        <input type="number" min="0" step={product.unit === "ud" ? 1 : "any"} value={qty} onChange={(e) => setQty(e.target.value)} data-testid="stock-qty-input"
           className="w-full px-4 py-3 rounded-xl border border-slate-300 font-mono-num font-bold text-center focus:outline-none focus:ring-2 focus:ring-amber-400" />
         <label className="text-xs font-semibold uppercase tracking-wider text-slate-500">
           {type === "entrada" ? "Motivo (opcional)" : "Motivo (obligatorio)"}

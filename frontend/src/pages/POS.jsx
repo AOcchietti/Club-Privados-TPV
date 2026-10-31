@@ -90,12 +90,17 @@ export default function POS() {
     setCart((c) => ({ ...c, [p.id]: (c[p.id] || 0) + 1 }));
   };
 
-  const changeQty = (id, delta) => {
+  const changeQty = (p, delta) => {
+    const current = cart[p.id] || 0;
+    if (delta > 0 && current >= available(p) - 1e-9) {
+      toast.warning(`Sin más stock de «${p.name}»`);
+      return;
+    }
     setCart((c) => {
       const next = { ...c };
-      const val = (next[id] || 0) + delta;
-      if (val <= 0) delete next[id];
-      else next[id] = Math.round(val * 1000) / 1000;
+      const val = Math.min((next[p.id] || 0) + delta, available(p));
+      if (val <= 1e-9) delete next[p.id];
+      else next[p.id] = Math.round(val * 1000) / 1000;
       return next;
     });
   };
@@ -106,11 +111,12 @@ export default function POS() {
     if (raw === "" || isNaN(parseFloat(raw))) return;
     const val = parseFloat(raw);
     if (val < 0) return;
-    const grams = mode === "cr" ? val / p.price : val;
+    let grams = mode === "cr" ? val / p.price : val;
+    if (p.unit === "ud") grams = Math.floor(grams + 1e-9); // por unidades: solo enteros
     if (grams <= 0) return;
     if (grams > available(p)) {
       toast.warning(`Stock máximo de «${p.name}»: ${available(p)}${p.unit}`);
-      setCart((c) => ({ ...c, [p.id]: available(p) }));
+      setCart((c) => ({ ...c, [p.id]: p.unit === "ud" ? Math.floor(available(p)) : available(p) }));
       return;
     }
     setCart((c) => ({ ...c, [p.id]: Math.round(grams * 1000) / 1000 }));
@@ -349,14 +355,14 @@ export default function POS() {
                         </button>
                       ))}
                       <div className="flex items-center gap-1 ml-auto">
-                        <button onClick={() => changeQty(p.id, -step)} className="w-7 h-7 rounded-lg bg-white border border-slate-200 flex items-center justify-center hover:bg-slate-50" data-testid={`cart-minus-${p.id}`}>
+                        <button onClick={() => changeQty(p, -step)} className="w-7 h-7 rounded-lg bg-white border border-slate-200 flex items-center justify-center hover:bg-slate-50" data-testid={`cart-minus-${p.id}`}>
                           <Minus className="w-3.5 h-3.5" />
                         </button>
                         <div className="relative">
                           <input
                             type="number"
                             min="0"
-                            step="any"
+                            step={p.unit === "ud" ? 1 : "any"}
                             value={qtyDraft[p.id] !== undefined ? qtyDraft[p.id] : (mode === "cr" ? credits : qty)}
                             onFocus={() => setQtyDraft((d) => ({ ...d, [p.id]: String(mode === "cr" ? credits : qty) }))}
                             onChange={(e) => {
@@ -371,7 +377,7 @@ export default function POS() {
                             {mode === "cr" ? "Cr" : p.unit}
                           </span>
                         </div>
-                        <button onClick={() => changeQty(p.id, step)} className="w-7 h-7 rounded-lg bg-white border border-slate-200 flex items-center justify-center hover:bg-slate-50" data-testid={`cart-plus-${p.id}`}>
+                        <button onClick={() => changeQty(p, step)} className="w-7 h-7 rounded-lg bg-white border border-slate-200 flex items-center justify-center hover:bg-slate-50" data-testid={`cart-plus-${p.id}`}>
                           <Plus className="w-3.5 h-3.5" />
                         </button>
                       </div>
