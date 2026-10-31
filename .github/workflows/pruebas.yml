@@ -27,15 +27,23 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - name: MongoDB 8 (la misma versión que el plan gratis de Atlas)
+        # Los runners de GitHub usan Linux 6.19+, incompatible con el TCMalloc de MongoDB 8 (SERVER-121912).
+        # Solución conocida: dejar que glibc gestione rseq. Si aun así no arranca, se prueba MongoDB 7.
         run: |
-          docker run -d --name mongo -p 27017:27017 mongo:8
-          for i in $(seq 60); do docker exec mongo mongosh --quiet --eval 'db.runCommand({ping:1}).ok' 2>/dev/null | grep -q 1 && break; sleep 2; done
-          if ! v=$(docker exec mongo mongosh --quiet --eval 'db.version()' 2>/dev/null); then
+          arrancar() {
+            docker rm -f mongo > /dev/null 2>&1 || true
+            docker run -d --name mongo -p 27017:27017 -e GLIBC_TUNABLES=glibc.pthread.rseq=1 "$1" > /dev/null
+            for i in $(seq 45); do docker exec mongo mongosh --quiet --eval 'db.runCommand({ping:1}).ok' 2>/dev/null | grep -q 1 && return 0; sleep 2; done
+            return 1
+          }
+          if arrancar mongo:8; then imagen=mongo:8
+          elif arrancar mongo:7; then imagen=mongo:7
+          else
             docker logs mongo 2>&1 | tail -40
             echo "::error title=MongoDB no arranca::$(docker logs mongo 2>&1 | tail -6 | tr '\n' ' ' | cut -c1-800)"
             exit 1
           fi
-          echo "::notice title=MongoDB::versión $v"
+          echo "::notice title=MongoDB::$imagen, versión $(docker exec mongo mongosh --quiet --eval 'db.version()')"
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
@@ -94,15 +102,23 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - name: MongoDB 8 (la misma versión que el plan gratis de Atlas)
+        # Los runners de GitHub usan Linux 6.19+, incompatible con el TCMalloc de MongoDB 8 (SERVER-121912).
+        # Solución conocida: dejar que glibc gestione rseq. Si aun así no arranca, se prueba MongoDB 7.
         run: |
-          docker run -d --name mongo -p 27017:27017 mongo:8
-          for i in $(seq 60); do docker exec mongo mongosh --quiet --eval 'db.runCommand({ping:1}).ok' 2>/dev/null | grep -q 1 && break; sleep 2; done
-          if ! v=$(docker exec mongo mongosh --quiet --eval 'db.version()' 2>/dev/null); then
+          arrancar() {
+            docker rm -f mongo > /dev/null 2>&1 || true
+            docker run -d --name mongo -p 27017:27017 -e GLIBC_TUNABLES=glibc.pthread.rseq=1 "$1" > /dev/null
+            for i in $(seq 45); do docker exec mongo mongosh --quiet --eval 'db.runCommand({ping:1}).ok' 2>/dev/null | grep -q 1 && return 0; sleep 2; done
+            return 1
+          }
+          if arrancar mongo:8; then imagen=mongo:8
+          elif arrancar mongo:7; then imagen=mongo:7
+          else
             docker logs mongo 2>&1 | tail -40
             echo "::error title=MongoDB no arranca::$(docker logs mongo 2>&1 | tail -6 | tr '\n' ' ' | cut -c1-800)"
             exit 1
           fi
-          echo "::notice title=MongoDB::versión $v"
+          echo "::notice title=MongoDB::$imagen, versión $(docker exec mongo mongosh --quiet --eval 'db.version()')"
       - name: Construir la imagen (frontend + API)
         run: docker build -t tpv-demo .
       - name: Arrancar como en producción (HTTPS off solo porque es localhost)

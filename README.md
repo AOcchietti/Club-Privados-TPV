@@ -28,7 +28,7 @@ python -m venv .venv
 # macOS / Linux:
 source .venv/bin/activate
 
-pip install -r requirements-local.txt
+pip install -r requirements.txt
 cp .env.example .env        # Windows: copy .env.example .env
 uvicorn server:app --reload --port 8001
 ```
@@ -68,14 +68,23 @@ python tests/run_all.py
 Funcionales, de seguridad (tríada CIA), de consistencia con simulación aleatoria y de mutación. No necesitan MongoDB ni el servidor arrancado.
 Detalle de qué se prueba y de la auditoría de seguridad: [`docs/AUDITORIA_SEGURIDAD.md`](docs/AUDITORIA_SEGURIDAD.md).
 
+En cada push a `main`, `demo` o `V02`, GitHub repite todo con paquetes y **MongoDB 8 reales** (`.github/workflows/pruebas.yml`):
+las pruebas anteriores, un recorrido completo por HTTP contra el servidor (`tests/e2e_real.py`) antes y después de reiniciarlo,
+la imagen Docker de despliegue con un navegador real (`tests/ui_smoke.py`) y la búsqueda de vulnerabilidades (`pip-audit`, `npm audit`).
+El resultado sale junto a cada commit (✔ / ✘) y en la pestaña *Actions*.
+
+## Publicar en un servidor
+
+Un solo servicio con el `Dockerfile` (app + API) y MongoDB Atlas. Paso a paso con Render: [`docs/DESPLIEGUE.md`](docs/DESPLIEGUE.md).
+
 ### Notas
 
 - En local las fotos y el PDF del acuerdo legal se guardan en `backend/uploads/` (no se sube a git).
   En Emergent se usa su almacenamiento si existe `EMERGENT_LLM_KEY`.
-- `requirements.txt` es el entorno completo de Emergent; para local basta `requirements-local.txt`.
+- `requirements.txt` tiene solo lo que usa el backend, con versiones sin vulnerabilidades conocidas (`requirements-local.txt` es lo mismo).
+  Si tenías un entorno virtual de antes, actualízalo: `pip install -U -r requirements.txt`.
 - Para empezar con la base de datos vacía, cambia `DB_NAME` en `backend/.env` (o borra la base desde MongoDB Compass).
   Los datos de ejemplo (cajero, productos y socios) solo se crean en el primer arranque de una base vacía.
 - ¿Contraseña del administrador olvidada? Arranca una vez el backend con `ADMIN_RESET_PASSWORD=true` en `backend/.env`:
   vuelve a poner la de `ADMIN_PASSWORD`. Después quita esa línea.
-- Si `yarn install` falla al descargar los paquetes `@emergentbase/...`, quita esas dos líneas de
-  `devDependencies` en `frontend/package.json`: solo son herramientas de la preview de Emergent.
+- Las tipografías se instalan con `yarn install` (paquetes `@fontsource`): la app ya no las pide a Google Fonts.

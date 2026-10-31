@@ -4,11 +4,12 @@ Rama `demo` · 31/10/2026
 
 ## Resumen
 
-- **18 problemas encontrados y corregidos**: 4 de gravedad alta, 6 media y 8 baja. La tabla con todos está más abajo.
+- **26 problemas encontrados y corregidos**: 5 de gravedad alta, 9 media y 12 baja. La tabla con todos está más abajo.
 - **El más grave**: al quinto intento de contraseña fallido, el login daba un error interno, y lo seguía dando para siempre para esa persona desde esa conexión. Venía del código original.
 - **Datos personales**: la aplicación enviaba grabaciones de pantalla a un servicio de analítica de Emergent, incluido el formulario de alta. Se ha eliminado.
 - **Pruebas automáticas**: cuatro bloques en `backend/tests` que hacen **más de 3,8 millones de comprobaciones** y pasan todas. Se repiten con `python tests/run_all.py`.
-- **Las propias pruebas están verificadas**: se metieron **18 errores a propósito** en copias del servidor y las pruebas detectaron los 18.
+- **Las propias pruebas están verificadas**: se metieron **20 errores a propósito** en copias del servidor y las pruebas detectaron los 20.
+- **Servidor real**: GitHub repite las pruebas en cada push con FastAPI, bcrypt y **MongoDB 8 reales**, recorre la app por HTTP, arranca la imagen de despliegue, abre la app en un navegador y busca vulnerabilidades en las dependencias.
 
 ## Alcance y método
 
@@ -30,8 +31,8 @@ Cada riesgo se ha clasificado según la **tríada CIA**:
    - Lectura de todas las rutas de la API.
    - Mapa automático de quién puede llamar a cada una, obtenido del propio código.
    - Búsqueda de patrones peligrosos: ejecución de código, consultas sin escapar, secretos escritos en el repositorio.
-2. **Pruebas funcionales de punta a punta** (`test_flows.py`, 230 comprobaciones). Recorren los procesos reales en orden: productos, inventario, ventas y recargas con y sin turno, apertura, recuento, cierre, PDF (incluidos los umbrales de descuadre), catálogo de refrescos y dulces, cantidades enteras en productos por unidades, subcategorías, botón de rellenar todo el recuento, alta pública con QR, usuarios y migración de datos antiguos.
-3. **Pruebas de seguridad por la tríada CIA** (`test_security.py`, 145 comprobaciones).
+2. **Pruebas funcionales de punta a punta** (`test_flows.py`, 234 comprobaciones). Recorren los procesos reales en orden: productos, inventario, ventas y recargas con y sin turno, apertura, recuento, cierre, PDF (incluidos los umbrales de descuadre), catálogo de refrescos y dulces, cantidades enteras en productos por unidades, subcategorías, botón de rellenar todo el recuento, alta pública con QR, usuarios y migración de datos antiguos.
+3. **Pruebas de seguridad por la tríada CIA** (`test_security.py`, 161 comprobaciones).
    - **Confidencialidad**:
      - Control de acceso de las 52 rutas.
      - Tokens manipulados: caducados, firmados con otra clave, de otro tipo, con algoritmo "none", con rol falsificado.
@@ -64,13 +65,19 @@ Cada riesgo se ha clasificado según la **tríada CIA**:
      - El efectivo esperado nunca es negativo.
      - Los productos por unidades (latas, chocolatinas…) nunca tienen stock ni ventas con decimales.
 5. **Pruebas de mutación** (`test_mutations.py`). Comprueban que las pruebas sirven:
-   - Se introducen 18 errores típicos en copias del servidor. Por ejemplo: "la venta no descuenta el saldo", "sin protección CSRF", "se aceptan SVG" o "el PDF trata igual los productos caros y los baratos".
-   - Las pruebas deben fallar con cada uno, y detectaron **18 de 18**.
+   - Se introducen 20 errores típicos en copias del servidor. Por ejemplo: "la venta no descuenta el saldo", "sin protección CSRF", "se aceptan SVG" o "el PDF trata igual los productos caros y los baratos".
+   - Las pruebas deben fallar con cada uno, y detectaron **20 de 20**.
    - Gracias a esto se encontró y cerró un hueco de las propias pruebas: no comprobaban mermas que se comieran stock ya vendido fuera de turno.
 6. **Pruebas de interfaz**:
    - Compilación completa del frontend.
    - Renderizado real en un navegador (Chromium) del TPV y de Caja con datos de prueba, para verificar el diseño y que los productos sin stock desaparecen.
    - Generación y revisión visual del PDF de cierre en casos normal, vacío y extremo (60 movimientos, 120 diferencias): siempre cabe en una página.
+
+7. **Pruebas contra el servidor real** (GitHub Actions, `.github/workflows/pruebas.yml`, en cada push):
+   - Las cuatro baterías anteriores con los paquetes reales instalados.
+   - `tests/e2e_real.py`: recorrido completo por HTTP contra FastAPI + MongoDB 8. Comprueba CSRF, cookies `httpOnly`, el bloqueo de intentos (el fallo n.º 1 solo aparecía con MongoDB real), el cierre de sesión, las subidas, las subcategorías, los turnos, 12 ventas simultáneas de 5 latas y el PDF. Después se reinicia el servidor y se comprueba que no se duplica ni se pierde nada.
+   - La imagen Docker de despliegue en modo producción: la app y la API salen del mismo servidor, un contenedor nuevo conserva las fotos (guardadas en MongoDB) y un navegador real (Chromium) entra, vende, abre Caja y Gestión sin pedir nada a terceros.
+   - `pip-audit` (backend) y `npm audit` de lo que llega al navegador.
 
 ## Hallazgos y correcciones
 
@@ -94,6 +101,14 @@ Cada riesgo se ha clasificado según la **tríada CIA**:
 | 16 | Faltaban cabeceras de seguridad (nosniff, anti-iframe, referrer). | C · I | Baja | Corregido |
 | 17 | CORS admitía `localhost:3000` también en producción. | C | Baja | Corregido |
 | 18 | Se aceptaban cantidades absurdas en recuentos y movimientos de stock. | I | Baja | Corregido: límite de cordura |
+| 19 | Se podía vender o contar media lata en productos por unidades. | I | Baja | Corregido: solo enteros |
+| 20 | **Dependencias con vulnerabilidades conocidas**: Starlette 0.37 (fijada por FastAPI 0.110.1), python-multipart, PyJWT 2.10.1, requests; en el navegador, axios 1.18.0, react-router 7.15.0 y zod 3.24.4 (que ni se usaba). | C · I · A | Alta | Corregido: versiones parcheadas, zod fuera y vigilancia en cada push |
+| 21 | Al **cerrar sesión**, una copia de la cookie seguía valiendo hasta 8 horas. | C | Media | Corregido: los tokens se anulan en el servidor |
+| 22 | En producción el servidor arrancaba con un `JWT_SECRET` corto (solo avisaba): con una clave débil se pueden falsificar sesiones. | C · I | Media | Corregido: no arranca |
+| 23 | Las fotos de DNI y el acuerdo legal se guardaban en el disco del servidor: en un hosting sin disco permanente se perderían en cada reinicio. | A · I | Media | Corregido: opción de guardarlos en MongoDB (`FILE_STORAGE=mongo`) |
+| 24 | Con bcrypt 5, una contraseña de más de 72 bytes daba error interno al crearla. | A | Baja | Corregido: se rechaza con un mensaje; las guardadas siguen valiendo |
+| 25 | Las tipografías se cargaban de **Google Fonts**: Google recibía la IP de quien abría el TPV o el formulario de alta. | C | Baja | Corregido: alojadas en la propia app |
+| 26 | Cada instalación del frontend descargaba paquetes de `assets.emergent.sh` (herramientas de la preview). | I | Baja | Corregido: eliminados |
 
 ### Lo que ya estaba bien
 
@@ -106,27 +121,18 @@ Cada riesgo se ha clasificado según la **tríada CIA**:
 - Un único turno activo, garantizado por la base de datos.
 - Los recuentos tienen control de versiones, por si se cuenta desde dos dispositivos a la vez.
 
-## Recomendaciones pendientes
+## Recomendaciones de la primera auditoría: estado
 
-Estas no se han podido hacer o comprobar desde aquí:
+| Recomendación | Estado |
+|---|---|
+| Actualizar dependencias y pasar `pip-audit` / `npm audit` | Hecho (n.º 20). GitHub los repite en cada push |
+| Producción: HTTPS, `JWT_SECRET` fuerte, contraseña propia del admin | HTTPS lo pone Render; el servidor no arranca con clave corta y avisa si el admin usa la de ejemplo. Falta poner tus contraseñas al desplegar (`docs/DESPLIEGUE.md`) |
+| Cierre de sesión que anule el token | Hecho (n.º 21) |
+| Google Fonts | Hecho (n.º 25) |
+| Probar con el servidor y MongoDB reales | Hecho: GitHub Actions con MongoDB 8, Docker y navegador |
+| RGPD: copias cifradas, plazo de conservación de las fotos | Fuera del código: activar las copias de Atlas y decidir el plazo |
 
-1. **Dependencias**:
-   - `requirements.txt` (el entorno de Emergent) fija `fastapi==0.110.1`. Esa versión arrastra Starlette ≤ 0.37, con vulnerabilidades conocidas en el procesado de formularios (por ejemplo CVE-2024-47874, denegación de servicio). Conviene actualizarla.
-   - `requirements-local.txt` ya instala versiones actuales.
-   - No se pudo ejecutar `pip-audit` ni `npm audit`, porque no había acceso a los registros de paquetes.
-2. **Producción**:
-   - HTTPS obligatorio, y no poner `COOKIE_SECURE=false`.
-   - `JWT_SECRET` aleatorio de más de 32 caracteres. El servidor avisa si es corto.
-   - Contraseña de administrador propia, y cambiar o borrar los usuarios de ejemplo de la demo.
-3. **Datos personales (RGPD)**:
-   - Las fotos de DNI y caras son datos sensibles: copias de seguridad cifradas de MongoDB y del almacenamiento de archivos.
-   - Política de cuánto tiempo se guardan.
-   - Acceso solo para el equipo, que ya es así.
-4. **Cierre de sesión**: borra la cookie, pero un token copiado seguiría siendo válido hasta 8 horas. Está mitigado porque el token no es accesible desde JavaScript. Si se quiere más, una lista de tokens revocados o sesiones más cortas.
-5. **Google Fonts**: las tipografías se descargan de Google, que recibe la IP de quien abre la app. Se pueden alojar en el propio servidor.
-6. **Límites de las pruebas**:
-   - Las pruebas automáticas llaman a las funciones del backend directamente, sin HTTP real y con una base de datos en memoria que imita a MongoDB.
-   - Antes de usarlo en el club, conviene una pasada manual con el servidor y MongoDB reales.
+Pendiente de mantenimiento (no urgente): Motor, el driver de MongoDB, está en desuso desde 2025 y deja de tener soporte el 14/05/2027 (cambiar a la API asíncrona de PyMongo); Create React App no tiene mantenimiento (pasar a Vite). Los avisos que quedan en `npm audit` completo son de sus herramientas de compilación, que no llegan al navegador.
 
 ## Cómo repetir las pruebas
 
@@ -135,4 +141,10 @@ cd backend
 python tests/run_all.py
 ```
 
-No necesita MongoDB ni el servidor arrancado. Tarda unos 20 segundos.
+No necesita MongoDB ni el servidor arrancado. Tarda unos 40 segundos.
+
+Contra un servidor real (escribe datos: solo con una base de datos de pruebas):
+
+```bash
+python tests/e2e_real.py http://localhost:8001 --si
+```

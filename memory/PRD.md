@@ -82,6 +82,15 @@ Frontend copiado tal cual de la preview de Emergent; backend reconstruido a part
 - Orden único de categorías y productos (TPV, catálogo, gestión y recuento), calculado en el backend (`ordered_categories`): flor/marihuana → hash/hachís → extracto → dry → polen → resto alfabético; cada madre seguida de sus subcategorías.
 - Recuento: una sección por categoría madre, con la subcategoría indicada en cada producto. Botón "Contado = esperado en todo el stock" en apertura y cierre (`autofill` con `all`); si ya hay productos contados con diferencia, pregunta si rellenar solo lo pendiente (`only_pending`) o todo.
 
+## Implementado (31/10/2026, iteración 10 · rama `demo` · cierre de la auditoría y despliegue)
+- Dependencias: `backend/requirements.txt` limpio (solo lo que usa el código) con mínimos sin vulnerabilidades conocidas (Starlette ≥ 1.0.1, python-multipart ≥ 0.0.31, PyJWT ≥ 2.12, requests ≥ 2.32.4). Frontend: axios ≥ 1.20, react-router ≥ 7.18; fuera zod y @hookform/resolvers (sin usar) y los paquetes de Emergent; react-scripts como devDependency.
+- Compatibilidad con Starlette 1.x (`lifespan` en vez de `on_event`) y con bcrypt 5 (recorte a 72 bytes; contraseñas más largas se rechazan).
+- Cerrar sesión anula en el servidor los tokens de ese dispositivo (`revoked_tokens` con TTL). En producción el servidor no arranca con un `JWT_SECRET` de menos de 32 caracteres.
+- `FILE_STORAGE=mongo`: fotos y PDF dentro de MongoDB (`file_blobs`). El backend sirve el frontend compilado si existe (`frontend/build`): app y API en la misma web. `COOKIE_SAMESITE` configurable.
+- Tipografías alojadas en la app (`@fontsource`), sin Google Fonts.
+- Despliegue: `Dockerfile` (un solo servicio), `render.yaml`, guía `docs/DESPLIEGUE.md`.
+- GitHub Actions (`.github/workflows/pruebas.yml`) con MongoDB 8 real: pruebas internas, `tests/e2e_real.py` por HTTP antes y después de reiniciar, imagen Docker en modo producción con contenedor nuevo, navegador real (`tests/ui_smoke.py`), `pip-audit` y `npm audit`.
+
 ## Backlog priorizado
 - P0: nada bloqueante pendiente.
 - P1: impresión/exportación de tickets y cierres (PDF/Z-report); límites de dispensación por socio/día (normativa CSC); caducidad de membresía con avisos; vista de socios con deuda (filtro en lista de socios).
