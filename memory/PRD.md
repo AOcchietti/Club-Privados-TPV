@@ -76,6 +76,12 @@ Frontend copiado tal cual de la preview de Emergent; backend reconstruido a part
 - Catálogo de comida y bebida: categorías "Refrescos" (Coca-Cola, Coca-Cola Zero, Fanta Naranja y Limón, Sprite, Aquarius, Nestea, agua) y "Dulces y snacks" (Kinder Bueno, Bueno White, Country, Delice, Twix, Snickers, KitKat, Chupa Chups), por unidades y con ilustraciones propias sin logotipos (`backend/demo_catalog.py`). Se añaden una sola vez al arrancar, también en bases ya existentes (marca `catalog_food_drinks_v1` en `settings`): lo que se borre o cambie después no se vuelve a crear.
 - Productos por unidades: solo cantidades enteras en ventas, entradas/mermas/ajustes, stock inicial y recuentos (el TPV redondea hacia abajo y el botón + ya no pasa del stock disponible).
 
+## Implementado (31/10/2026, iteración 9 · rama `demo`)
+- Subcategorías opcionales (un solo nivel): en el mismo diálogo de "Nueva categoría" se marca "Es una subcategoría" y se elige "Dentro de". Una subcategoría puede llamarse igual que otra categoría (clave `madre-nombre`). No se puede borrar una categoría con subcategorías ni meter dentro de otra una categoría que ya las tiene. En Gestión cada categoría muestra sus subcategorías dentro de su tarjeta y el selector de producto muestra "Madre › Sub".
+- Filtros con subcategorías en TPV, Productos y Gestión (`components/CategoryFilter.jsx`): al elegir una categoría que las tenga aparece debajo una segunda fila ("Todo X" + subcategorías). Elegir la madre incluye los productos de sus subcategorías (también en `GET /products?category=`).
+- Orden único de categorías y productos (TPV, catálogo, gestión y recuento), calculado en el backend (`ordered_categories`): flor/marihuana → hash/hachís → extracto → dry → polen → resto alfabético; cada madre seguida de sus subcategorías.
+- Recuento: una sección por categoría madre, con la subcategoría indicada en cada producto. Botón "Contado = esperado en todo el stock" en apertura y cierre (`autofill` con `all`); si ya hay productos contados con diferencia, pregunta si rellenar solo lo pendiente (`only_pending`) o todo.
+
 ## Backlog priorizado
 - P0: nada bloqueante pendiente.
 - P1: impresión/exportación de tickets y cierres (PDF/Z-report); límites de dispensación por socio/día (normativa CSC); caducidad de membresía con avisos; vista de socios con deuda (filtro en lista de socios).

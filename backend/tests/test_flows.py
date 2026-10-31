@@ -370,6 +370,54 @@ async def main():
     ok_sale = await S.create_sale(S.SaleCreate(items=[S.SaleItemIn(product_id=fanta["id"], qty=2)], socio_id=socio_ud["id"]), user=cajero)
     check(ok_sale["total"] == 4.0, "2 latas a 2 Cr = 4 Cr")
 
+    # ----- subcategorías (opcionales, un solo nivel) -----
+    flores = await S.create_category(S.CategoryIn(label="Flores"), user=admin)
+    check(flores["parent"] is None, "categoría normal, sin madre")
+    ind = await S.create_category(S.CategoryIn(label="Índica", parent="flores"), user=admin)
+    check(ind["parent"] == "flores" and ind["key"] == "flores-indica", "subcategoría aunque ya exista otra categoría con esa clave")
+    sat = await S.create_category(S.CategoryIn(label="Sativa", color="amber", parent="flores"), user=admin)
+    await expect_error(S.create_category(S.CategoryIn(label="Índica", parent="flores"), user=admin), 400, "dentro de «flores»")
+    await expect_error(S.create_category(S.CategoryIn(label="Nieta", parent=ind["key"]), user=admin), 400, "un nivel")
+    await expect_error(S.create_category(S.CategoryIn(label="Huérfana", parent="no-existe"), user=admin), 400, "no existe")
+    await expect_error(S.update_category(flores["id"], S.CategoryIn(label="Flores", parent="refrescos"), user=admin), 400, "tiene subcategorías")
+    await expect_error(S.update_category(sat["id"], S.CategoryIn(label="Sativa", parent=sat["key"]), user=admin), 400, "sí misma")
+    moved = await S.update_category(sat["id"], S.CategoryIn(label="Sativa", color="amber"), user=admin)
+    check(moved["parent"] is None, "una subcategoría puede pasar a ser categoría normal")
+    moved = await S.update_category(sat["id"], S.CategoryIn(label="Sativa", color="amber", parent="flores"), user=admin)
+    check(moved["parent"] == "flores", "y volver a ser subcategoría")
+    await expect_error(S.delete_category(flores["id"], user=admin), 400, "subcategorías")
+    p_fl = await S.create_product(S.ProductCreate(name="Flor suelta", category="flores", price=8, unit="g", initial_stock=5), user=admin)
+    p_ind = await S.create_product(S.ProductCreate(name="Gelato", category=ind["key"], price=10, unit="g", initial_stock=5), user=admin)
+    await S.create_product(S.ProductCreate(name="Haze Sub", category=sat["key"], price=9, unit="g", initial_stock=5), user=admin)
+    names = lambda ps: sorted(p["name"] for p in ps)  # noqa: E731
+    check(names(await S.list_products(q=None, category="flores", active_only=True, user=cajero)) == ["Flor suelta", "Gelato", "Haze Sub"],
+          "filtrar por la categoría madre incluye sus subcategorías")
+    check(names(await S.list_products(q=None, category=ind["key"], active_only=True, user=cajero)) == ["Gelato"], "filtrar por subcategoría")
+    await expect_error(S.delete_category(ind["id"], user=admin), 400, "productos usan")
+    order = [c["label"] for c in await S.list_categories(user=admin)]
+    check(order == ["Flor Índica", "Flor Sativa", "Flores", "Índica", "Sativa", "Marihuana medicinal", "Hash", "Extracto", "Dry Sift", "Polen",
+                    "Accesorio", "Comestible", "Dulces y snacks", "Refrescos"], f"orden único de categorías {order}")
+
+    # recuento: una sección por categoría madre, con la subcategoría en cada línea; botón de rellenar todo
+    await S.cash_closing_start(user=cajero)
+    await S.cash_closing_cash(S.ClosingCashIn(counted=0, reason="prueba"), user=cajero)
+    st = await S.cash_closing_stocktake_start(user=cajero)
+    check(st["sections"][:4] == ["Flor Índica", "Flor Sativa", "Flores", "Marihuana medicinal"], f"secciones {st['sections'][:4]}")
+    check("Índica" not in st["sections"] and "Sativa" not in st["sections"], "las subcategorías no son secciones aparte")
+    fl = [l for l in st["lines"] if l["category_label"] == "Flores"]
+    check([l["name"] for l in fl] == ["Flor suelta", "Gelato", "Haze Sub"] and [l["subcategory_label"] for l in fl] == [None, "Índica", "Sativa"],
+          "la sección de la madre agrupa sus subcategorías en orden")
+    st = await S.cash_stocktake_line(S.StocktakeLineIn(product_id=p_ind["id"], counted=4, version=st["version"]), user=cajero)
+    st = await S.cash_stocktake_autofill(S.AutofillIn(all=True, only_pending=True, version=st["version"]), user=cajero)
+    check(all(l["counted"] is not None for l in st["lines"]), "rellenar todo completa el recuento entero")
+    check(next(l for l in st["lines"] if l["product_id"] == p_ind["id"])["counted"] == 4, "rellenar lo pendiente respeta lo ya contado")
+    await expect_error(S.cash_stocktake_autofill(S.AutofillIn(all=True, only_pending=True, version=st["version"]), user=cajero), 400, "nada pendiente")
+    st = await S.cash_stocktake_autofill(S.AutofillIn(all=True, version=st["version"]), user=cajero)
+    check(all(l["counted"] == l["expected"] for l in st["lines"]), "rellenar todo también sobrescribe si se pide")
+    await expect_error(S.cash_stocktake_autofill(S.AutofillIn(version=st["version"]), user=cajero), 400, "todo el recuento")
+    await S.cash_closing_finalize(user=cajero)
+    check((await db.products.find_one({"_id": S.oid(p_fl["id"])}))["stock"] == 5, "cierre con todo rellenado sin cambiar el stock")
+
     # ----- reglas añadidas en la auditoría -----
     await expect_error(S.list_sales(range="all", payment=None, socio_id=None, user=cajero), 403, "administración")
     check(isinstance(await S.list_sales(range="all", payment=None, socio_id=lucia["id"], user=cajero), list), "el cajero ve las ventas de un socio")

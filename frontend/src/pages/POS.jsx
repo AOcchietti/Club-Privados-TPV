@@ -2,7 +2,8 @@ import { useEffect, useMemo, useState } from "react";
 import { useSearchParams, Link } from "react-router-dom";
 import { motion, AnimatePresence } from "framer-motion";
 import { toast } from "sonner";
-import api, { fmtEUR, apiError, catLabel, catStyle } from "@/lib/api";
+import api, { fmtEUR, apiError, catLabel, catStyle, inCategory, byCategoryOrder } from "@/lib/api";
+import CategoryFilter from "@/components/CategoryFilter";
 import { useAuth } from "@/context/AuthContext";
 import TicketDialog from "@/components/TicketDialog";
 import RechargeDialog from "@/components/RechargeDialog";
@@ -57,13 +58,15 @@ export default function POS() {
 
   const filtered = useMemo(
     () =>
-      products.filter(
-        (p) =>
-          available(p) > 0 && // sin stock: se oculta del TPV automáticamente
-          (!cat || p.category === cat) &&
-          (!q || p.name.toLowerCase().includes(q.toLowerCase()))
-      ),
-    [products, q, cat]
+      products
+        .filter(
+          (p) =>
+            available(p) > 0 && // sin stock: se oculta del TPV automáticamente
+            inCategory(categories, p.category, cat) && // una categoría madre incluye sus subcategorías
+            (!q || p.name.toLowerCase().includes(q.toLowerCase()))
+        )
+        .sort(byCategoryOrder(categories)), // flores → hash → extractos → dry → polen → resto, como el recuento
+    [products, categories, q, cat]
   );
 
   const filteredSocios = useMemo(
@@ -197,22 +200,7 @@ export default function POS() {
               className="w-full pl-10 pr-4 py-3 rounded-xl border border-slate-300 bg-white focus:outline-none focus:ring-2 focus:ring-amber-400"
             />
           </div>
-          <div className="flex gap-2 flex-wrap" data-testid="pos-category-filters">
-            {[{ key: null, label: "Todo" }, ...categories].map((c) => (
-              <button
-                key={c.label}
-                onClick={() => setCat(c.key)}
-                data-testid={`pos-filter-${c.key || "todo"}`}
-                className={`px-3.5 py-2 rounded-full text-xs font-bold transition-colors border ${
-                  cat === c.key
-                    ? "bg-slate-900 text-white border-slate-900"
-                    : "bg-white text-slate-600 border-slate-200 hover:border-slate-400"
-                }`}
-              >
-                {c.label}
-              </button>
-            ))}
-          </div>
+          <CategoryFilter categories={categories} value={cat} onChange={setCat} allLabel="Todo" testid="pos" />
 
           <div className="grid grid-cols-[repeat(auto-fill,minmax(150px,1fr))] gap-3" data-testid="pos-products-grid">
             {filtered.map((p) => {

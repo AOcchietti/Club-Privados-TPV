@@ -198,6 +198,8 @@ async def simulate(seed, steps):
                         await S.cash_closing_stocktake_start(user=actor)
                     else:
                         st = S.ser(st)
+                        if rnd.random() < 0.3:  # botón "contado = esperado en todo el stock" (solo lo pendiente)
+                            st = await S.cash_stocktake_autofill(S.AutofillIn(all=True, only_pending=True, version=st["version"]), user=actor)
                         for line in st["lines"]:
                             deltas = [-2, -1, 1] if line["unit"] == "ud" else [-2, -0.5, 1]
                             counted = line["expected"] if rnd.random() < 0.8 else max(0, line["expected"] + rnd.choice(deltas))

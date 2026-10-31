@@ -411,6 +411,8 @@ class StocktakeLineIn(BaseModel):
 class AutofillIn(BaseModel):
     section: Optional[str] = None
     product_id: Optional[str] = None
+    all: bool = False            # todo el recuento de una vez
+    only_pending: bool = False   # no tocar lo que ya se ha contado
     version: int
 
 
@@ -904,43 +906,111 @@ def slugify(text: str) -> str:
 class CategoryIn(BaseModel):
     label: str
     color: str = "emerald"
+    parent: Optional[str] = None  # clave de la categoría madre si es una subcategoría (un solo nivel)
+
+
+# Orden único de categorías (TPV, catálogo, gestión y recuento), según palabras clave del nombre:
+# flores/marihuana → hash/hachís → extractos → dry → polen → el resto en orden alfabético.
+# Cada categoría madre va seguida de sus subcategorías, ordenadas con el mismo criterio.
+SECTION_PRIORITY = [("flor", "marihuana", "marijuana"), ("hash", "hachis"), ("extracto",), ("dry",), ("polen",)]
+
+
+def plain(text: str) -> str:
+    return unicodedata.normalize("NFKD", text or "").encode("ascii", "ignore").decode("ascii").lower()
+
+
+def section_sort_key(label: str):
+    t = plain(label)
+    for rank, words in enumerate(SECTION_PRIORITY):
+        if any(w in t for w in words):
+            return (rank, t)
+    return (len(SECTION_PRIORITY), t)
+
+
+def ordered_categories(cats: list) -> list:
+    keys = {c["key"] for c in cats}
+    children = {}
+    for c in cats:
+        if c.get("parent") in keys:
+            children.setdefault(c["parent"], []).append(c)
+    tops = [c for c in cats if c.get("parent") not in keys]  # sin madre (o con una madre que ya no existe)
+    out = []
+    for c in sorted(tops, key=lambda c: section_sort_key(c["label"])):
+        out.append(c)
+        out.extend(sorted(children.get(c["key"], []), key=lambda k: section_sort_key(k["label"])))
+    return out
+
+
+async def category_and_children(key: str) -> list:
+    return [key] + [c["key"] for c in await db.categories.find({"parent": key}).to_list(500)]
+
+
+async def valid_parent(parent_key: Optional[str], self_key: Optional[str] = None) -> Optional[dict]:
+    if not parent_key:
+        return None
+    if parent_key == self_key:
+        raise HTTPException(status_code=400, detail="Una categoría no puede ser subcategoría de sí misma")
+    parent = await db.categories.find_one({"key": parent_key})
+    if not parent:
+        raise HTTPException(status_code=400, detail="La categoría madre no existe")
+    if parent.get("parent"):
+        raise HTTPException(status_code=400, detail=f"«{parent['label']}» ya es una subcategoría: solo se permite un nivel")
+    return parent
 
 
 @api_router.get("/categories")
 async def list_categories(user: dict = Depends(require_staff)):
-    docs = await db.categories.find().sort("label", 1).to_list(100)
-    return [ser(d) for d in docs]
+    docs = await db.categories.find().to_list(500)
+    return [ser(d) for d in ordered_categories(docs)]
 
 
 @api_router.post("/categories")
 async def create_category(body: CategoryIn, user: dict = Depends(require_staff)):
-    key = slugify(body.label)
+    label = body.label.strip()
+    key = slugify(label)
     if not key:
         raise HTTPException(status_code=400, detail="Nombre no válido")
+    parent = await valid_parent(body.parent)
     if await db.categories.find_one({"key": key}):
-        raise HTTPException(status_code=400, detail="Ya existe una categoría con ese nombre")
-    doc = {"key": key, "label": body.label.strip(), "color": body.color, "created_at": now_utc()}
+        # Una subcategoría puede llamarse igual que otra categoría ("Índica" dentro de "Flores")
+        if parent and not await db.categories.find_one({"key": f"{parent['key']}-{key}"}):
+            key = f"{parent['key']}-{key}"
+        else:
+            raise HTTPException(status_code=400, detail="Ya existe una categoría con ese nombre"
+                                + (f" dentro de «{parent['label']}»" if parent else ""))
+    doc = {"key": key, "label": label, "color": body.color, "parent": parent["key"] if parent else None, "created_at": now_utc()}
     result = await db.categories.insert_one(doc)
     doc["_id"] = result.inserted_id
-    await log_activity(user, "categoria_creada", f"Nueva categoría «{doc['label']}»")
+    await log_activity(user, "categoria_creada",
+                       f"Nueva subcategoría «{label}» dentro de «{parent['label']}»" if parent else f"Nueva categoría «{label}»")
     return ser(doc)
 
 
 @api_router.patch("/categories/{cat_id}")
 async def update_category(cat_id: str, body: CategoryIn, user: dict = Depends(require_staff)):
-    target = await db.categories.find_one({"_id": ObjectId(cat_id)})
+    target = await db.categories.find_one({"_id": oid(cat_id)})
     if not target:
         raise HTTPException(status_code=404, detail="Categoría no encontrada")
-    await db.categories.update_one({"_id": ObjectId(cat_id)}, {"$set": {"label": body.label.strip(), "color": body.color}})
-    await log_activity(user, "categoria_editada", f"Categoría «{body.label}» actualizada")
-    return ser(await db.categories.find_one({"_id": ObjectId(cat_id)}))
+    if not body.label.strip():
+        raise HTTPException(status_code=400, detail="Nombre no válido")
+    parent = await valid_parent(body.parent, target["key"])
+    if parent and await db.categories.count_documents({"parent": target["key"]}):
+        raise HTTPException(status_code=400, detail=f"«{target['label']}» tiene subcategorías: no puede ser subcategoría de otra")
+    await db.categories.update_one({"_id": target["_id"]}, {"$set": {"label": body.label.strip(), "color": body.color,
+                                                                     "parent": parent["key"] if parent else None}})
+    await log_activity(user, "categoria_editada", f"Categoría «{body.label.strip()}» actualizada"
+                       + (f" (dentro de «{parent['label']}»)" if parent else ""))
+    return ser(await db.categories.find_one({"_id": target["_id"]}))
 
 
 @api_router.delete("/categories/{cat_id}")
 async def delete_category(cat_id: str, user: dict = Depends(require_staff)):
-    target = await db.categories.find_one({"_id": ObjectId(cat_id)})
+    target = await db.categories.find_one({"_id": oid(cat_id)})
     if not target:
         raise HTTPException(status_code=404, detail="Categoría no encontrada")
+    subs = await db.categories.count_documents({"parent": target["key"]})
+    if subs > 0:
+        raise HTTPException(status_code=400, detail=f"No se puede eliminar: tiene {subs} subcategoría{'s' if subs != 1 else ''}. Elimínalas o muévelas antes")
     used = await db.products.count_documents({"category": target["key"]})
     if used > 0:
         raise HTTPException(status_code=400, detail=f"No se puede eliminar: {used} productos usan esta categoría")
@@ -957,8 +1027,8 @@ async def list_products(q: Optional[str] = None, category: Optional[str] = None,
     query = {}
     if active_only:
         query["active"] = True
-    if category:
-        query["category"] = category
+    if category:  # una categoría madre incluye los productos de sus subcategorías
+        query["category"] = {"$in": await category_and_children(category)}
     if q:
         query["name"] = {"$regex": re.escape(q.strip()), "$options": "i"}
     docs = await db.products.find(query).sort("name", 1).to_list(500)
@@ -1263,21 +1333,8 @@ async def get_sale(sale_id: str, user: dict = Depends(require_staff)):
 
 STOCKTAKE_SCOPE = "productos activos y cualquier producto con existencias, agrupados por categoría"
 
-# Orden de las secciones del recuento según palabras clave de la categoría (válido para cualquier club):
-# flores primero, después hachís, extractos, dry y polen, y al final el resto en orden alfabético.
-SECTION_PRIORITY = [("flor", "marihuana", "marijuana"), ("hash", "hachis"), ("extracto",), ("dry",), ("polen",)]
-
-
-def plain(text: str) -> str:
-    return unicodedata.normalize("NFKD", text or "").encode("ascii", "ignore").decode("ascii").lower()
-
-
-def section_sort_key(label: str):
-    t = plain(label)
-    for rank, words in enumerate(SECTION_PRIORITY):
-        if any(w in t for w in words):
-            return (rank, t)
-    return (len(SECTION_PRIORITY), t)
+# Las secciones del recuento son las categorías madre, en el mismo orden que el TPV (ordered_categories).
+# Los productos de una subcategoría se cuentan dentro de la sección de su madre.
 
 
 def can_operate(session: dict, user: dict) -> bool:
@@ -1315,28 +1372,38 @@ async def get_draft_stocktake(session: dict, kind: Optional[str] = None):
 
 
 async def build_stocktake(session: dict, kind: str, user: dict) -> dict:
-    cats = {c["key"]: c["label"] for c in await db.categories.find().to_list(500)}
+    cats = ordered_categories(await db.categories.find().to_list(500))
+    by_key = {c["key"]: c for c in cats}
+    pos = {c["key"]: i for i, c in enumerate(cats)}
     products = await db.products.find({"$or": [{"active": True}, {"stock": {"$gt": 0}}]}).sort("name", 1).to_list(5000)
-    lines = []
+    lines, order = [], {}
     for p in products:
-        lines.append({
+        cat = by_key.get(p.get("category"))
+        top = by_key.get(cat.get("parent")) if cat and cat.get("parent") in by_key else cat
+        label = top["label"] if top else (p.get("category") or "Sin categoría")
+        line = {
             "product_id": str(p["_id"]),
             "name": p["name"],
             "unit": p.get("unit", "g"),
             "category": p.get("category"),
-            "category_label": cats.get(p.get("category"), p.get("category") or "Sin categoría"),
+            "category_label": label,  # sección = categoría madre
+            "subcategory_label": cat["label"] if cat and top is not cat else None,
             "expected": round(p.get("stock", 0) or 0, 3),
             "price": p.get("price"),  # para decidir qué descuadres salen en el PDF
             "counted": None,
             "difference": None,
-        })
-    lines.sort(key=lambda l: (section_sort_key(l["category_label"]), plain(l["name"])))
+        }
+        # categorías conocidas en el orden del TPV; las desconocidas al final, con el mismo criterio de palabras
+        order[line["product_id"]] = (pos[top["key"]] if top else len(cats), section_sort_key(label),
+                                     pos[cat["key"]] if cat else 0, plain(p["name"]))
+        lines.append(line)
+    lines.sort(key=lambda l: order[l["product_id"]])
     doc = {
         "session_id": str(session["_id"]),
         "kind": kind,
         "status": "draft",
         "scope": STOCKTAKE_SCOPE,
-        "sections": sorted({l["category_label"] for l in lines}, key=section_sort_key),
+        "sections": list(dict.fromkeys(l["category_label"] for l in lines)),
         "lines": lines,
         "version": 1,
         "created_by": user["name"],
@@ -1625,15 +1692,19 @@ async def cash_stocktake_autofill(body: AutofillIn, user: dict = Depends(require
     st = await get_draft_stocktake(session)
     if not st:
         raise HTTPException(status_code=400, detail="No hay ningún recuento en curso")
-    if not body.section and not body.product_id:
-        raise HTTPException(status_code=400, detail="Indica una sección o un producto")
+    if not body.all and not body.section and not body.product_id:
+        raise HTTPException(status_code=400, detail="Indica una sección, un producto o todo el recuento")
     lines = st["lines"]
     touched = 0
     for l in lines:
-        if (body.section and l["category_label"] == body.section) or (body.product_id and l["product_id"] == body.product_id):
+        if body.all or (body.section and l["category_label"] == body.section) or (body.product_id and l["product_id"] == body.product_id):
+            if body.only_pending and l["counted"] is not None:
+                continue
             set_counted(l, l["expected"])
             touched += 1
     if not touched:
+        if body.only_pending:
+            raise HTTPException(status_code=400, detail="No queda nada pendiente de contar")
         raise HTTPException(status_code=404, detail="Nada que rellenar con esa selección")
     return await save_stocktake_lines(st, lines, body.version)
 
