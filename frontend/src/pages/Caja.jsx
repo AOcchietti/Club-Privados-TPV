@@ -447,6 +447,17 @@ function ReportDialog({ sessionId, open, onClose }) {
                 ))}
               </div>
             )}
+            {report.out_of_shift_recharges?.length > 0 && (
+              <div className="bg-sky-50 border border-sky-200 rounded-xl p-3.5" data-testid="report-out-of-shift-recharges">
+                <p className="font-bold text-slate-900 mb-1">Recargas fuera de turno incorporadas ({report.out_of_shift_recharges.length})</p>
+                {report.out_of_shift_recharges.map((r) => (
+                  <p key={r.id} className="text-xs text-slate-600 flex justify-between">
+                    <span>{fmtDateTime(r.created_at)} · {r.socio_name}</span>
+                    <span className="font-mono-num font-bold">{fmtEUR(r.amount)}</span>
+                  </p>
+                ))}
+              </div>
+            )}
             <StocktakeDiffList st={report.opening_stocktake} title="Recuento de apertura" />
             {s.cash_count && (
               <div className="bg-amber-50 border border-amber-200 rounded-xl p-3.5">
@@ -638,8 +649,17 @@ export default function Caja() {
             <div className="max-w-md mx-auto mt-4 bg-sky-50 border border-sky-200 rounded-xl px-4 py-3 text-sm text-sky-800 flex items-center gap-3 text-left" data-testid="pending-out-of-shift-banner">
               <Hourglass className="w-5 h-5 shrink-0 text-sky-500" />
               <p>
-                Hay <b>{pendingOut.count} ventas fuera de turno</b> por <b className="font-mono-num">{fmtEUR(pendingOut.total)}</b>.
+                Hay <b>{pendingOut.count} {pendingOut.count === 1 ? "venta" : "ventas"} fuera de turno</b> por <b className="font-mono-num">{fmtEUR(pendingOut.total)}</b>.
                 Se incorporarán obligatoriamente a este turno al abrirlo y su stock se descontará antes del recuento.
+              </p>
+            </div>
+          )}
+          {(pendingOut.recharges_count || 0) > 0 && (
+            <div className="max-w-md mx-auto mt-4 bg-sky-50 border border-sky-200 rounded-xl px-4 py-3 text-sm text-sky-800 flex items-center gap-3 text-left" data-testid="pending-out-of-shift-recharges-banner">
+              <Hourglass className="w-5 h-5 shrink-0 text-sky-500" />
+              <p>
+                Hay <b>{pendingOut.recharges_count} {pendingOut.recharges_count === 1 ? "recarga" : "recargas"} fuera de turno</b> por <b className="font-mono-num">{fmtEUR(pendingOut.recharges_total)}</b> en efectivo.
+                Ese efectivo se sumará al esperado de este turno: <b>no lo incluyas en el fondo inicial</b>.
               </p>
             </div>
           )}
@@ -660,6 +680,11 @@ export default function Caja() {
                 <ClipboardCheck className="w-4 h-4 text-amber-500" /> Apertura en curso · turno de {session.opened_by}
               </p>
               <p className="text-xs text-slate-500 mt-0.5">La caja queda reservada: ventas y recargas en pausa hasta confirmar la apertura.</p>
+              {(session.out_of_shift_recharge_count || 0) > 0 && (
+                <p className="text-xs text-sky-700 font-semibold mt-1" data-testid="opening-absorbed-recharges-note">
+                  {session.out_of_shift_recharge_count} {session.out_of_shift_recharge_count === 1 ? "recarga" : "recargas"} fuera de turno incorporadas ({fmtEUR(session.out_of_shift_recharge_total || 0)}); su efectivo ya cuenta en el esperado de este turno.
+                </p>
+              )}
               {(session.out_of_shift_count || 0) > 0 && (
                 <p className="text-xs text-sky-700 font-semibold mt-1" data-testid="opening-absorbed-note">
                   {session.out_of_shift_count} ventas fuera de turno incorporadas ({fmtEUR(session.out_of_shift_total || 0)}); su stock ya está descontado en el esperado.
@@ -728,6 +753,11 @@ export default function Caja() {
             {(session.out_of_shift_count || 0) > 0 && (
               <span className="badge-inactive" data-testid="session-out-of-shift-note">
                 incluye {session.out_of_shift_count} ventas fuera de turno ({fmtEUR(session.out_of_shift_total || 0)})
+              </span>
+            )}
+            {(session.out_of_shift_recharge_count || 0) > 0 && (
+              <span className="badge-inactive" data-testid="session-out-of-shift-recharges-note">
+                incluye {session.out_of_shift_recharge_count} {session.out_of_shift_recharge_count === 1 ? "recarga" : "recargas"} fuera de turno ({fmtEUR(session.out_of_shift_recharge_total || 0)})
               </span>
             )}
           </div>

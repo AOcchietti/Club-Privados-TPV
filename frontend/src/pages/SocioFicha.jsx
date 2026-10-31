@@ -158,7 +158,10 @@ export default function SocioFicha() {
                     <p className="text-sm font-semibold text-slate-800 font-mono-num">+{fmtEUR(r.amount)}</p>
                     <p className="text-xs text-slate-400">{r.created_by} · {fmtDateTime(r.created_at)}</p>
                   </div>
-                  <span className="text-xs text-slate-400 capitalize">{r.method}</span>
+                  <span className="text-xs text-slate-400 capitalize">
+                    {r.method}
+                    {r.out_of_shift && <span className="ml-1.5 normal-case text-[10px] font-bold px-1.5 py-0.5 rounded-md bg-sky-100 text-sky-700 border border-sky-200">fuera de turno{r.out_of_shift_pending ? " · pendiente" : ""}</span>}
+                  </span>
                 </div>
               ))}
             </div>

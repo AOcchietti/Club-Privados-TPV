@@ -151,101 +151,6 @@ class Pdf:
         return bytes(out)
 
 
-class Report(Pdf):
-    """Documento con cursor vertical, saltos de página automáticos y pie con numeración."""
-
-    def __init__(self, title: str, subtitle: str, club: str):
-        super().__init__(title)
-        self.club = club
-        self.doc_title = title
-        self.rect(0, PAGE_H - 92, PAGE_W, 92, AMBER)
-        self.text(LEFT, PAGE_H - 40, club.upper(), 9, True, INK)
-        self.text(LEFT, PAGE_H - 64, title, 20, True, INK)
-        self.text(LEFT, PAGE_H - 80, subtitle, 10, False, INK)
-        self.y = PAGE_H - 112
-
-    def ensure(self, height):
-        if self.y - height < BOTTOM:
-            self.new_page()
-            self.text(LEFT, PAGE_H - 40, f"{self.doc_title} (continuación)", 9, True, MUTED)
-            self.line(LEFT, PAGE_H - 48, RIGHT, PAGE_H - 48)
-            self.y = PAGE_H - 66
-
-    def section(self, title):
-        self.ensure(90)  # que el título no quede solo al final de la página
-        self.y -= 16
-        self.text(LEFT, self.y, title, 12, True)
-        self.y -= 7
-        self.line(LEFT, self.y, RIGHT, self.y, AMBER, 1.2)
-        self.y -= 15
-
-    def kv(self, label, value, bold=False, color=INK):
-        self.ensure(15)
-        self.text(LEFT, self.y, label, 10, False, MUTED)
-        self.text_right(RIGHT, self.y, fit(value, (RIGHT - LEFT) * 0.6, 10, bold), 10, bold, color)
-        self.y -= 15
-
-    def highlight(self, label, value, color=INK):
-        self.ensure(30)
-        self.rect(LEFT, self.y - 9, RIGHT - LEFT, 24, AMBER_SOFT)
-        self.text(LEFT + 8, self.y, label, 11, True)
-        self.text_right(RIGHT - 8, self.y, value, 11, True, color)
-        self.y -= 30
-
-    def paragraph(self, text, size=9, color=MUTED):
-        for line in wrap(text, RIGHT - LEFT, size):
-            self.ensure(13)
-            self.text(LEFT, self.y, line, size, False, color)
-            self.y -= 12
-        self.y -= 3
-
-    def table(self, columns, rows, colors=None):
-        """columns: [(cabecera, anchura relativa, 'l' | 'r')]."""
-        total = sum(c[1] for c in columns)
-        widths = [(RIGHT - LEFT) * c[1] / total for c in columns]
-
-        def header():
-            self.ensure(20)
-            x = LEFT
-            for (title, _, align), w in zip(columns, widths):
-                if align == "r":
-                    self.text_right(x + w - 2, self.y, title, 8, True, MUTED)
-                else:
-                    self.text(x, self.y, title, 8, True, MUTED)
-                x += w
-            self.y -= 5
-            self.line(LEFT, self.y, RIGHT, self.y)
-            self.y -= 12
-
-        header()
-        for i, row in enumerate(rows):
-            if self.y - 14 < BOTTOM:
-                self.ensure(10_000)  # fuerza salto de página
-                header()
-            x = LEFT
-            for j, ((_, _, align), w) in enumerate(zip(columns, widths)):
-                color = (colors[i][j] if colors and colors[i] and colors[i][j] else INK)
-                cell = fit(row[j], w - 6, 9)
-                if align == "r":
-                    self.text_right(x + w - 2, self.y, cell, 9, False, color)
-                else:
-                    self.text(x, self.y, cell, 9, False, color)
-                x += w
-            self.y -= 5
-            self.line(LEFT, self.y, RIGHT, self.y, (0.95, 0.96, 0.97), 0.4)
-            self.y -= 10
-        self.y -= 4
-
-    def finish(self, footer_left: str) -> bytes:
-        n = len(self.pages)
-        for i, ops in enumerate(self.pages, start=1):
-            self.ops = ops
-            self.line(LEFT, 44, RIGHT, 44)
-            self.text(LEFT, 32, footer_left, 8, False, MUTED)
-            self.text_right(RIGHT, 32, f"Página {i} de {n}", 8, False, MUTED)
-        return self.render()
-
-
 # ---------- formato ----------
 
 def as_local(value):
@@ -295,124 +200,213 @@ def diff_label(diff):
     return ("Sobrante", GREEN) if diff > 0 else ("Faltante", RED)
 
 
-# ---------- informe ----------
+# ---------- informe en una sola página ----------
 
-def _stocktake_section(rep: Report, title: str, st):
-    rep.section(title)
+MARGIN = 40.0
+L0, R1 = MARGIN, PAGE_W - MARGIN
+GAP = 20.0
+COL_W = (R1 - L0 - GAP) / 2
+LEFT_COL = (L0, L0 + COL_W)
+RIGHT_COL = (L0 + COL_W + GAP, R1)
+ROW = 13.0          # alto de una línea de datos
+FOOTER_Y = 30.0
+CONTENT_BOTTOM = 62.0
+
+
+def _section_title(pdf: Pdf, x0, x1, y, title):
+    pdf.text(x0, y, title, 10.5, True, INK)
+    pdf.line(x0, y - 5, x1, y - 5, AMBER, 1.1)
+    return y - 18
+
+
+def _kv(pdf: Pdf, x0, x1, y, label, value, bold=False, color=INK, size=9.0):
+    width = x1 - x0
+    value = fit(value, width * 0.55, size, bold)
+    label = fit(label, width - text_width(value, size, bold) - 8, size)
+    pdf.text(x0, y, label, size, False, MUTED)
+    pdf.text_right(x1, y, value, size, bold, color)
+    return y - ROW
+
+
+def _rows_budget(available, needs, per_row):
+    """Reparte filas entre bloques (movimientos, recuentos) para que todo quepa en la página."""
+    alloc = list(needs)
+    while sum(a * pr for a, pr in zip(alloc, per_row)) > available and any(alloc):
+        i = max(range(len(alloc)), key=lambda k: alloc[k])
+        alloc[i] -= 1
+    return alloc
+
+
+def _diffs(st):
     if not st:
-        rep.paragraph("Este turno no tiene recuento registrado.")
-        return
-    lines = st.get("lines", [])
-    diffs = [l for l in lines if l.get("difference") is not None and abs(l["difference"]) > 1e-9]
-    rep.kv("Productos contados", str(len(lines)))
-    rep.kv("Productos con diferencia", str(len(diffs)), color=RED if diffs else GREEN)
-    if st.get("finalized_by"):
-        rep.kv("Contado por", st["finalized_by"])
-    if not diffs:
-        rep.paragraph("Todo el stock contado coincide con el esperado.")
-        return
-    rep.y -= 4
-    rows, colors = [], []
-    for l in diffs:
-        d = l["difference"]
-        rows.append([l["name"], l.get("category_label") or "", fmt_qty(l["expected"], l["unit"]),
-                     fmt_qty(l["counted"], l["unit"]), ("+" if d > 0 else "") + fmt_qty(d, l["unit"])])
-        colors.append([None, MUTED, None, None, RED if d < 0 else GREEN])
-    rep.table([("Producto", 34, "l"), ("Sección", 22, "l"), ("Esperado", 14, "r"), ("Contado", 14, "r"), ("Diferencia", 16, "r")],
-              rows, colors)
-    rep.paragraph("El stock contado pasó a ser el stock del sistema al confirmar el recuento.")
+        return []
+    return [l for l in st.get("lines", []) if l.get("difference") is not None and abs(l["difference"]) > 1e-9]
 
 
 def build_closing_pdf(session: dict, sales: list, recharges: list, movements: list,
                       opening_st, closing_st, club: str = "Weed Lemon Social Club") -> bytes:
+    pdf = Pdf("Resumen de cierre de turno")
     closed_local = as_local(session.get("closed_at"))
-    subtitle = f"Turno de {session.get('opened_by', '-')}"
+
+    # Cabecera
+    pdf.rect(0, PAGE_H - 74, PAGE_W, 74, AMBER)
+    pdf.text(L0, PAGE_H - 26, club.upper(), 8, True, INK)
+    pdf.text(L0, PAGE_H - 48, "Resumen de cierre de turno", 18, True, INK)
+    sub = f"Turno de {session.get('opened_by', '-')}"
     if closed_local:
-        subtitle += f" · {closed_local.strftime('%d/%m/%Y')}"
-    rep = Report("Resumen de cierre de turno", subtitle, club)
+        sub += f" · {closed_local.strftime('%d/%m/%Y')}"
+    pdf.text(L0, PAGE_H - 63, sub, 9.5, False, INK)
+    top = PAGE_H - 96
 
-    # Turno
-    rep.section("Turno")
-    rep.kv("Responsable del turno", session.get("opened_by") or "-", bold=True)
-    rep.kv("Apertura", fmt_dt(session.get("opened_at")))
-    rep.kv("Cierre", fmt_dt(session.get("closed_at")))
-    rep.kv("Duración", fmt_duration(session.get("opened_at"), session.get("closed_at")))
-    closed_by = session.get("closed_by") or "-"
+    # ----- Fila 1: Turno | Ventas -----
+    y = _section_title(pdf, *LEFT_COL, top, "Turno")
+    y = _kv(pdf, *LEFT_COL, y, "Responsable", session.get("opened_by") or "-", bold=True)
+    y = _kv(pdf, *LEFT_COL, y, "Apertura", fmt_dt(session.get("opened_at")))
+    y = _kv(pdf, *LEFT_COL, y, "Cierre", fmt_dt(session.get("closed_at")))
+    y = _kv(pdf, *LEFT_COL, y, "Duración", fmt_duration(session.get("opened_at"), session.get("closed_at")))
+    y = _kv(pdf, *LEFT_COL, y, "Cerrado por", session.get("closed_by") or "-")
     if session.get("supervised"):
-        closed_by += " (supervisión de administrador)"
-    rep.kv("Cerrado por", closed_by)
+        y = _kv(pdf, *LEFT_COL, y, "Supervisión", "Administrador")
+    y_left = y
 
-    # Efectivo
-    cc = session.get("cash_count") or {}
-    starting = session.get("starting_amount", 0) or 0
-    rec_cash = [r for r in recharges if r.get("method", "efectivo") == "efectivo"]
-    rec_total = sum(r["amount"] for r in rec_cash)
-    entradas = sum(m["amount"] for m in movements if m["type"] == "in")
-    salidas = sum(m["amount"] for m in movements if m["type"] == "out")
-    expected = cc.get("expected", session.get("expected_amount"))
-    counted = cc.get("counted", session.get("counted_amount"))
-    difference = cc.get("difference", session.get("difference"))
-    rep.section("Arqueo de efectivo")
-    rep.kv("Fondo inicial", fmt_cr(starting))
-    rep.kv(f"Recargas de saldo en efectivo ({len(rec_cash)})", fmt_cr(rec_total))
-    rep.kv("Entradas manuales", fmt_cr(entradas))
-    rep.kv("Salidas manuales", fmt_cr(-salidas) if salidas else fmt_cr(0))
-    if expected is not None:
-        rep.kv("Efectivo esperado", fmt_cr(expected), bold=True)
-    if counted is not None:
-        rep.kv("Efectivo contado", fmt_cr(counted), bold=True)
-    if difference is not None:
-        label, color = diff_label(difference)
-        rep.highlight(f"Diferencia de caja · {label}", fmt_cr(difference, sign=True), color)
-    note = cc.get("reason") or session.get("notes")
-    if note:
-        rep.paragraph(f"Nota del arqueo: {note}", 9, INK)
-
-    # Ventas
     total_sales = sum(s["total"] for s in sales)
     grams = sum(i["qty"] for s in sales for i in s["items"] if i.get("unit") == "g")
     units = sum(i["qty"] for s in sales for i in s["items"] if i.get("unit") != "g")
     oos = [s for s in sales if s.get("out_of_shift")]
     socios = {s.get("socio_id") for s in sales if s.get("socio_id")}
-    rep.section("Ventas")
-    rep.kv("Tickets", str(len(sales)))
-    rep.kv("Total vendido (con saldo de socios)", fmt_cr(total_sales), bold=True)
-    rep.kv("Socios atendidos", str(len(socios)))
-    rep.kv("Gramos dispensados", fmt_qty(grams, "g"))
-    rep.kv("Unidades vendidas", fmt_qty(units, "ud"))
-    if oos:
-        rep.kv(f"Ventas fuera de turno incorporadas ({len(oos)})", fmt_cr(sum(s["total"] for s in oos)))
     deuda = (session.get("totals") or {}).get("deuda_socios")
+    y = _section_title(pdf, *RIGHT_COL, top, "Ventas (con saldo de socios)")
+    y = _kv(pdf, *RIGHT_COL, y, "Tickets", str(len(sales)))
+    y = _kv(pdf, *RIGHT_COL, y, "Total vendido", fmt_cr(total_sales), bold=True)
+    y = _kv(pdf, *RIGHT_COL, y, "Socios atendidos", str(len(socios)))
+    y = _kv(pdf, *RIGHT_COL, y, "Gramos / unidades", f"{fmt_qty(grams, 'g')} · {fmt_qty(units, 'ud')}")
+    if oos:
+        y = _kv(pdf, *RIGHT_COL, y, f"Fuera de turno incorporadas ({len(oos)})", fmt_cr(sum(s['total'] for s in oos)))
     if deuda is not None:
-        rep.kv("Deuda total de socios al cierre", fmt_cr(deuda), color=RED if deuda > 0 else INK)
-    rep.paragraph("Las ventas se cobran del saldo de los socios: no mueven efectivo. El efectivo entra con las recargas.")
+        y = _kv(pdf, *RIGHT_COL, y, "Deuda de socios al cierre", fmt_cr(deuda), color=RED if deuda > 0 else INK)
+    y_right = y
+    top = min(y_left, y_right) - 8
 
-    if sales:
-        agg = {}
-        for s in sales:
-            for i in s["items"]:
-                key = (i["name"], i.get("unit", "g"))
-                row = agg.setdefault(key, {"qty": 0.0, "total": 0.0, "tickets": 0})
-                row["qty"] += i["qty"]
-                row["total"] += i["line_total"]
-                row["tickets"] += 1
-        rows = [[name, str(v["tickets"]), fmt_qty(v["qty"], unit), fmt_cr(v["total"])]
-                for (name, unit), v in sorted(agg.items(), key=lambda kv: -kv[1]["total"])]
-        rep.section("Productos vendidos")
-        rep.table([("Producto", 46, "l"), ("Líneas", 12, "r"), ("Cantidad", 18, "r"), ("Total", 24, "r")], rows)
+    # ----- Fila 2: Arqueo | Diferencia -----
+    cc = session.get("cash_count") or {}
+    starting = session.get("starting_amount", 0) or 0
+    rec_cash = [r for r in recharges if r.get("method", "efectivo") == "efectivo"]
+    rec_oos = [r for r in rec_cash if r.get("out_of_shift")]
+    entradas = sum(m["amount"] for m in movements if m["type"] == "in")
+    salidas = sum(m["amount"] for m in movements if m["type"] == "out")
+    expected = cc.get("expected", session.get("expected_amount"))
+    counted = cc.get("counted", session.get("counted_amount"))
+    difference = cc.get("difference", session.get("difference"))
 
-    if movements:
-        rep.section("Movimientos manuales de caja")
-        rows, colors = [], []
-        for m in sorted(movements, key=lambda m: m["created_at"]):
+    y = _section_title(pdf, *LEFT_COL, top, "Arqueo de efectivo")
+    y = _kv(pdf, *LEFT_COL, y, "Fondo inicial", fmt_cr(starting))
+    y = _kv(pdf, *LEFT_COL, y, f"Recargas en efectivo ({len(rec_cash)})", fmt_cr(sum(r['amount'] for r in rec_cash)))
+    if rec_oos:
+        y = _kv(pdf, *LEFT_COL, y, f"  de ellas fuera de turno ({len(rec_oos)})", fmt_cr(sum(r['amount'] for r in rec_oos)))
+    y = _kv(pdf, *LEFT_COL, y, "Entradas manuales", fmt_cr(entradas))
+    y = _kv(pdf, *LEFT_COL, y, "Salidas manuales", fmt_cr(-salidas) if salidas else fmt_cr(0))
+    if expected is not None:
+        y = _kv(pdf, *LEFT_COL, y, "Efectivo esperado", fmt_cr(expected), bold=True)
+    if counted is not None:
+        y = _kv(pdf, *LEFT_COL, y, "Efectivo contado", fmt_cr(counted), bold=True)
+    y_left = y
+
+    y = _section_title(pdf, *RIGHT_COL, top, "Resultado de caja")
+    x0, x1 = RIGHT_COL
+    if difference is not None:
+        label, color = diff_label(difference)
+        pdf.rect(x0, y - 34, x1 - x0, 46, AMBER_SOFT)
+        pdf.text(x0 + 10, y - 2, label.upper(), 8.5, True, MUTED)
+        pdf.text(x0 + 10, y - 24, fmt_cr(difference, sign=True), 18, True, color)
+        y -= 56
+    note = cc.get("reason") or session.get("notes")
+    if note:
+        lines = wrap(f"Nota: {note}", x1 - x0, 8.5)
+        if len(lines) > 3:
+            lines = lines[:2] + [fit(lines[2] + " " + lines[3], x1 - x0, 8.5)]
+            if not lines[2].endswith("..."):
+                lines[2] = fit(lines[2] + " ...", x1 - x0, 8.5)
+        for line in lines:
+            pdf.text(x0, y, line, 8.5, False, INK)
+            y -= 11
+    pdf.text(x0, y - 2, "Esperado = fondo + recargas en efectivo + entradas - salidas.", 7.5, False, MUTED)
+    y -= 14
+    y_right = y
+    top = min(y_left, y_right) - 8
+
+    # ----- Reparto del espacio restante -----
+    open_diffs, close_diffs = _diffs(opening_st), _diffs(closing_st)
+    mov_overhead = 18 + 14 + (12 if movements else 0)      # título + cabecera + posible "y N más"
+    stock_overhead = 18 + 26 + 12 + 12                      # título + resumen + cabecera + posible "y N más"
+    footnote = 14
+    available = top - CONTENT_BOTTOM - mov_overhead - stock_overhead - footnote
+    mov_rows, stock_rows = _rows_budget(available, [len(movements), max(len(open_diffs), len(close_diffs))], [12, 11])
+
+    # ----- Fila 3: Movimientos manuales -----
+    y = _section_title(pdf, L0, R1, top, f"Movimientos manuales de caja ({len(movements)})")
+    if not movements:
+        pdf.text(L0, y, "Sin movimientos manuales en este turno.", 8.5, False, MUTED)
+        y -= 14
+    else:
+        cols = [(L0, "Hora", "l"), (L0 + 46, "Tipo", "l"), (L0 + 100, "Motivo", "l"), (L0 + 330, "Por", "l"), (R1, "Importe", "r")]
+        for x, title, al in cols:
+            (pdf.text_right if al == "r" else pdf.text)(x, y, title, 7.5, True, MUTED)
+        y -= 12
+        ordered = sorted(movements, key=lambda m: m["created_at"])
+        for m in ordered[:mov_rows]:
             sign = 1 if m["type"] == "in" else -1
-            rows.append([fmt_dt(m["created_at"], with_date=False), "Entrada" if sign > 0 else "Salida",
-                         m.get("reason") or "", m.get("created_by") or "", fmt_cr(sign * m["amount"], sign=True)])
-            colors.append([MUTED, None, None, MUTED, GREEN if sign > 0 else RED])
-        rep.table([("Hora", 10, "l"), ("Tipo", 12, "l"), ("Motivo", 40, "l"), ("Por", 18, "l"), ("Importe", 20, "r")], rows, colors)
+            pdf.text(L0, y, fmt_dt(m["created_at"], with_date=False), 8.5, False, MUTED)
+            pdf.text(L0 + 46, y, "Entrada" if sign > 0 else "Salida", 8.5)
+            pdf.text(L0 + 100, y, fit(m.get("reason") or "", 222, 8.5), 8.5)
+            pdf.text(L0 + 330, y, fit(m.get("created_by") or "", 110, 8.5), 8.5, False, MUTED)
+            pdf.text_right(R1, y, fmt_cr(sign * m["amount"], sign=True), 8.5, True, GREEN if sign > 0 else RED)
+            y -= 12
+        if len(ordered) > mov_rows:
+            pdf.text(L0, y, f"... y {len(ordered) - mov_rows} movimientos más (detalle completo en el informe del turno de la aplicación).", 7.5, False, MUTED)
+            y -= 12
+    top = y - 6
 
-    _stocktake_section(rep, "Recuento de stock · apertura", opening_st)
-    _stocktake_section(rep, "Recuento de stock · cierre", closing_st)
+    # ----- Fila 4: Recuentos de stock (apertura | cierre) -----
+    def stock_block(col, title, st, diffs):
+        x0, x1 = col
+        yy = _section_title(pdf, x0, x1, top, title)
+        if not st:
+            pdf.text(x0, yy, "Sin recuento registrado.", 8.5, False, MUTED)
+            return
+        n = len(st.get("lines", []))
+        pdf.text(x0, yy, f"{n} productos contados · {len(diffs)} con diferencia", 8.5, True, RED if diffs else GREEN)
+        yy -= 11
+        if st.get("finalized_by"):
+            pdf.text(x0, yy, f"Contado por {st['finalized_by']}", 8, False, MUTED)
+        yy -= 15
+        if not diffs:
+            pdf.text(x0, yy, "Todo coincide con el esperado.", 8.5, False, MUTED)
+            return
+        w = x1 - x0
+        pdf.text(x0, yy, "Producto", 7.5, True, MUTED)
+        pdf.text_right(x0 + w * 0.66, yy, "Esperado", 7.5, True, MUTED)
+        pdf.text_right(x0 + w * 0.83, yy, "Contado", 7.5, True, MUTED)
+        pdf.text_right(x1, yy, "Dif.", 7.5, True, MUTED)
+        yy -= 11
+        for l in diffs[:stock_rows]:
+            d = l["difference"]
+            pdf.text(x0, yy, fit(l["name"], w * 0.46, 8.5), 8.5)
+            pdf.text_right(x0 + w * 0.66, yy, fmt_qty(l["expected"], l["unit"]), 8.5, False, MUTED)
+            pdf.text_right(x0 + w * 0.83, yy, fmt_qty(l["counted"], l["unit"]), 8.5)
+            pdf.text_right(x1, yy, ("+" if d > 0 else "") + fmt_qty(d, l["unit"]), 8.5, True, RED if d < 0 else GREEN)
+            yy -= 11
+        if len(diffs) > stock_rows:
+            pdf.text(x0, yy, f"... y {len(diffs) - stock_rows} diferencias más", 7.5, False, MUTED)
 
+    stock_block(LEFT_COL, "Recuento de stock · apertura", opening_st, open_diffs)
+    stock_block(RIGHT_COL, "Recuento de stock · cierre", closing_st, close_diffs)
+
+    # Nota y pie
+    pdf.text(L0, CONTENT_BOTTOM - 8,
+             "Lo contado pasa a ser el stock del sistema al confirmar cada recuento. Las ventas se cobran del saldo; el efectivo entra por las recargas.",
+             7, False, MUTED)
     generated = datetime.now(timezone.utc).astimezone(MADRID).strftime("%d/%m/%Y %H:%M")
-    return rep.finish(f"{club} · Resumen de cierre · generado el {generated}")
+    pdf.line(L0, FOOTER_Y + 12, R1, FOOTER_Y + 12)
+    pdf.text(L0, FOOTER_Y, f"{club} · Resumen de cierre · generado el {generated}", 7.5, False, MUTED)
+    pdf.text_right(R1, FOOTER_Y, "Página 1 de 1", 7.5, False, MUTED)
+    return pdf.render()

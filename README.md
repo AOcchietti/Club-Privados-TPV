@@ -58,11 +58,24 @@ Se abre <http://localhost:3000>.
 
 El formulario público de alta de socios está en <http://localhost:3000/alta>.
 
+### Pruebas automáticas
+
+```bash
+cd backend
+python tests/run_all.py
+```
+
+Funcionales, de seguridad (tríada CIA), de consistencia con simulación aleatoria y de mutación. No necesitan MongoDB ni el servidor arrancado.
+Detalle de qué se prueba y de la auditoría de seguridad: [`docs/AUDITORIA_SEGURIDAD.md`](docs/AUDITORIA_SEGURIDAD.md).
+
 ### Notas
 
 - En local las fotos y el PDF del acuerdo legal se guardan en `backend/uploads/` (no se sube a git).
   En Emergent se usa su almacenamiento si existe `EMERGENT_LLM_KEY`.
 - `requirements.txt` es el entorno completo de Emergent; para local basta `requirements-local.txt`.
 - Para empezar con la base de datos vacía, cambia `DB_NAME` en `backend/.env` (o borra la base desde MongoDB Compass).
+  Los datos de ejemplo (cajero, productos y socios) solo se crean en el primer arranque de una base vacía.
+- ¿Contraseña del administrador olvidada? Arranca una vez el backend con `ADMIN_RESET_PASSWORD=true` en `backend/.env`:
+  vuelve a poner la de `ADMIN_PASSWORD`. Después quita esa línea.
 - Si `yarn install` falla al descargar los paquetes `@emergentbase/...`, quita esas dos líneas de
   `devDependencies` en `frontend/package.json`: solo son herramientas de la preview de Emergent.

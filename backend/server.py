@@ -47,6 +47,11 @@ def hash_password(password: str) -> str:
     return bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
 
 
+def check_password(password: str):
+    if len(password or "") < 8:
+        raise HTTPException(status_code=400, detail="La contraseña debe tener al menos 8 caracteres")
+
+
 def verify_password(plain: str, hashed: str) -> bool:
     try:
         return bcrypt.checkpw(plain.encode("utf-8"), hashed.encode("utf-8"))
@@ -101,6 +106,13 @@ def now_utc() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def as_aware(value):
+    """MongoDB devuelve las fechas sin zona horaria (en UTC): se marcan como UTC para poder compararlas."""
+    if isinstance(value, datetime) and value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value
+
+
 async def log_activity(actor: dict, action: str, details: str):
     await db.activity.insert_one({
         "user_id": actor.get("id") or actor.get("_id"),
@@ -124,9 +136,17 @@ async def get_current_user(request: Request) -> dict:
         payload = jwt.decode(token, os.environ["JWT_SECRET"], algorithms=[JWT_ALGORITHM])
         if payload.get("type") != "access":
             raise HTTPException(status_code=401, detail="Token inválido")
-        user = await db.users.find_one({"_id": ObjectId(payload["sub"])})
+        try:
+            uid = ObjectId(payload.get("sub"))
+        except (InvalidId, TypeError):
+            raise HTTPException(status_code=401, detail="Token inválido")
+        user = await db.users.find_one({"_id": uid})
         if not user:
             raise HTTPException(status_code=401, detail="Usuario no encontrado")
+        # Una cuenta suspendida, pendiente o que ya no es del equipo pierde el acceso al momento,
+        # aunque todavía tenga un token sin caducar.
+        if user.get("role") not in STAFF_ROLES or user.get("status") in ("suspendida", "pendiente"):
+            raise HTTPException(status_code=401, detail="Cuenta sin acceso")
         user["id"] = str(user.pop("_id"))
         return user
     except jwt.ExpiredSignatureError:
@@ -158,6 +178,7 @@ async def next_seq(name: str) -> int:
 ACTIVE_STATUSES = ["opening", "open", "closing"]
 STATUS_TEXT = {"opening": "en apertura (recuento de stock)", "open": "abierta", "closing": "en proceso de cierre"}
 USER_STATUSES = ["activa", "pendiente", "expirada", "suspendida"]
+MAX_QTY = 1_000_000  # tope de cordura para cantidades de stock
 DOC_TYPES = ["DNI", "NIE", "Pasaporte", "Otro"]
 
 
@@ -173,9 +194,13 @@ def oid(value: str) -> ObjectId:
 
 
 def client_ip(request: Request) -> str:
+    # La primera entrada de X-Forwarded-For la puede escribir el propio cliente (y saltarse los
+    # límites de intentos); la última la añade el proxy que tenemos delante.
     fwd = request.headers.get("x-forwarded-for", "")
     if fwd:
-        return fwd.split(",")[0].strip()
+        last = fwd.split(",")[-1].strip()
+        if last:
+            return last
     return request.client.host if request.client else "desconocida"
 
 
@@ -389,10 +414,10 @@ class CashMovementIn(BaseModel):
 @api_router.post("/auth/login")
 async def login(body: LoginIn, request: Request, response: Response):
     email = body.email.strip().lower()
-    identifier = f"{request.client.host}:{email}"
+    identifier = f"{client_ip(request)}:{email}"
     attempt = await db.login_attempts.find_one({"identifier": identifier})
     if attempt and attempt.get("count", 0) >= 5:
-        locked_until = attempt.get("locked_until")
+        locked_until = as_aware(attempt.get("locked_until"))
         if locked_until and locked_until > now_utc():
             raise HTTPException(status_code=429, detail="Demasiados intentos. Espera 15 minutos.")
     user = await db.users.find_one({"email": email})
@@ -412,8 +437,7 @@ async def login(body: LoginIn, request: Request, response: Response):
     access = create_access_token(str(user["_id"]), email, user["role"])
     refresh = create_refresh_token(str(user["_id"]))
     set_auth_cookies(response, access, refresh)
-    out = ser(user)
-    out["token"] = access
+    out = ser(user)  # el token solo viaja en la cookie httpOnly: no queda al alcance de JavaScript
     await log_activity(out, "login", f"{out['name']} inició sesión")
     return out
 
@@ -442,9 +466,12 @@ async def refresh(request: Request, response: Response):
             raise HTTPException(status_code=401, detail="Token inválido")
     except jwt.InvalidTokenError:
         raise HTTPException(status_code=401, detail="Token inválido")
-    user = await db.users.find_one({"_id": ObjectId(payload["sub"])})
-    if not user:
-        raise HTTPException(status_code=401, detail="Usuario no encontrado")
+    try:
+        user = await db.users.find_one({"_id": ObjectId(payload.get("sub"))})
+    except (InvalidId, TypeError):
+        user = None
+    if not user or user.get("role") not in STAFF_ROLES or user.get("status") in ("suspendida", "pendiente"):
+        raise HTTPException(status_code=401, detail="Cuenta sin acceso")
     access = create_access_token(str(user["_id"]), user["email"], user["role"])
     set_access_cookie(response, access)
     return {"ok": True}
@@ -521,6 +548,7 @@ async def create_user(body: UserCreate, user: dict = Depends(require_staff)):
             raise HTTPException(status_code=400, detail="Email y contraseña obligatorios para el equipo")
         if await db.users.find_one({"email": doc["email"]}):
             raise HTTPException(status_code=400, detail="Ya existe un usuario con ese email")
+        check_password(body.password)
         doc["password_hash"] = hash_password(body.password)
     if body.role == "socio":
         doc.update(clean_socio_fields(body.model_dump()))
@@ -567,6 +595,7 @@ async def update_user(user_id: str, body: UserUpdate, user: dict = Depends(requi
                 raise HTTPException(status_code=400, detail="Para pasar a equipo hace falta email y contraseña")
             updates["role"] = data["role"]
         if "password" in data and data["password"]:
+            check_password(data["password"])
             updates["password_hash"] = hash_password(data["password"])
     if not updates:
         return ser(target)
@@ -579,10 +608,12 @@ async def update_user(user_id: str, body: UserUpdate, user: dict = Depends(requi
 async def delete_user(user_id: str, user: dict = Depends(require_admin)):
     if user_id == user["id"]:
         raise HTTPException(status_code=400, detail="No puedes eliminarte a ti mismo")
-    target = await db.users.find_one({"_id": ObjectId(user_id)})
+    target = await db.users.find_one({"_id": oid(user_id)})
     if not target:
         raise HTTPException(status_code=404, detail="Usuario no encontrado")
-    await db.users.delete_one({"_id": ObjectId(user_id)})
+    if abs(target.get("balance") or 0) > 0.005:
+        raise HTTPException(status_code=400, detail=f"No se puede eliminar: tiene un saldo de {round(target['balance'], 2)} Cr. Déjalo a 0 o suspende la cuenta.")
+    await db.users.delete_one({"_id": target["_id"]})
     await log_activity(user, "usuario_eliminado", f"Baja de {target.get('role')} «{target['name']}»")
     return {"ok": True}
 
@@ -610,10 +641,11 @@ async def recharge_balance(user_id: str, body: RechargeIn, user: dict = Depends(
     if body.method != "efectivo":
         raise HTTPException(status_code=400, detail="Las recargas solo se hacen en efectivo")
     session = await get_active_session()
-    if not session:
-        raise HTTPException(status_code=400, detail="Abre un turno en Caja para recargar: el efectivo tiene que entrar en un turno")
-    if session["status"] != "open":
+    if session and session["status"] != "open":
         raise HTTPException(status_code=400, detail=f"La caja está {STATUS_TEXT[session['status']]}: las recargas están en pausa")
+    # Sin turno abierto la recarga queda "fuera de turno": el saldo sube ya y el efectivo
+    # se incorpora al esperado del siguiente turno cuando se abra (igual que las ventas).
+    out_of_shift = session is None
     amount = round(body.amount, 2)
     await db.users.update_one({"_id": target["_id"]}, {"$inc": {"balance": amount}})
     await db.recharges.insert_one({
@@ -621,12 +653,17 @@ async def recharge_balance(user_id: str, body: RechargeIn, user: dict = Depends(
         "socio_name": target["name"],
         "amount": amount,
         "method": "efectivo",
-        "session_id": str(session["_id"]),
+        "session_id": None if out_of_shift else str(session["_id"]),
+        "out_of_shift": out_of_shift,
+        "out_of_shift_pending": out_of_shift,
         "created_by": user["name"],
         "created_at": now_utc(),
     })
-    await log_activity(user, "recarga", f"Recarga de {amount} Cr (efectivo) para {target['name']}")
-    return ser(await db.users.find_one({"_id": target["_id"]}))
+    nota = " · FUERA DE TURNO (se incorporará a la próxima caja)" if out_of_shift else ""
+    await log_activity(user, "recarga", f"Recarga de {amount} Cr (efectivo) para {target['name']}{nota}")
+    out = ser(await db.users.find_one({"_id": target["_id"]}))
+    out["recharge_out_of_shift"] = out_of_shift
+    return out
 
 
 @api_router.get("/users/{user_id}/recharges")
@@ -663,19 +700,44 @@ async def store_file(data: bytes, content_type: str, filename: Optional[str], fo
     return result["path"]
 
 
-async def read_image_upload(file: UploadFile, max_mb: int = 5) -> bytes:
-    if not (file.content_type or "").startswith("image/"):
-        raise HTTPException(status_code=400, detail="Solo se permiten imágenes")
-    data = await file.read()
-    if len(data) > max_mb * 1024 * 1024:
-        raise HTTPException(status_code=400, detail=f"La imagen no puede superar {max_mb} MB")
+IMAGE_SIGNATURES = [
+    (b"\xff\xd8\xff", "image/jpeg"),
+    (b"\x89PNG\r\n\x1a\n", "image/png"),
+    (b"GIF87a", "image/gif"),
+    (b"GIF89a", "image/gif"),
+]
+
+
+def sniff_image(data: bytes) -> Optional[str]:
+    """Tipo real de la imagen según sus primeros bytes (no según lo que diga el navegador)."""
+    for sig, ctype in IMAGE_SIGNATURES:
+        if data.startswith(sig):
+            return ctype
+    if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return "image/webp"
+    return None
+
+
+async def read_limited(file: UploadFile, max_bytes: int, too_big: str) -> bytes:
+    data = await file.read(max_bytes + 1)  # nunca se carga en memoria más de lo permitido
+    if len(data) > max_bytes:
+        raise HTTPException(status_code=400, detail=too_big)
     return data
+
+
+async def read_image_upload(file: UploadFile, max_mb: int = 5):
+    data = await read_limited(file, max_mb * 1024 * 1024, f"La imagen no puede superar {max_mb} MB")
+    ctype = sniff_image(data)
+    if not ctype:
+        # SVG, HTML disfrazado, etc.: se rechaza para evitar que un archivo subido ejecute código
+        raise HTTPException(status_code=400, detail="Solo se permiten imágenes JPG, PNG, WEBP o GIF")
+    return data, ctype
 
 
 @api_router.post("/upload")
 async def upload(file: UploadFile = File(...), user: dict = Depends(require_staff)):
-    data = await read_image_upload(file)
-    path = await store_file(data, file.content_type or "image/jpeg", file.filename, f"uploads/{user['id']}", user["id"])
+    data, ctype = await read_image_upload(file)
+    path = await store_file(data, ctype, file.filename, f"uploads/{user['id']}", user["id"])
     await log_activity(user, "foto_subida", f"Foto subida: {file.filename}")
     return {"path": path}
 
@@ -685,8 +747,8 @@ async def upload(file: UploadFile = File(...), user: dict = Depends(require_staf
 @api_router.post("/public/upload")
 async def public_upload(request: Request, file: UploadFile = File(...)):
     await rate_limit(request, "public_upload", limit=120)
-    data = await read_image_upload(file, max_mb=8)
-    path = await store_file(data, file.content_type or "image/jpeg", file.filename, "kyc", "formulario_publico", public=True)
+    data, ctype = await read_image_upload(file, max_mb=8)
+    path = await store_file(data, ctype, file.filename, "kyc", "formulario_publico", public=True)
     return {"path": path}
 
 
@@ -774,11 +836,9 @@ async def public_legal_pdf():
 
 @api_router.post("/settings/legal-pdf")
 async def upload_legal_pdf(file: UploadFile = File(...), user: dict = Depends(require_admin)):
-    data = await file.read()
+    data = await read_limited(file, 10 * 1024 * 1024, "El PDF no puede superar 10 MB")
     if not data.startswith(b"%PDF"):
         raise HTTPException(status_code=400, detail="El archivo tiene que ser un PDF")
-    if len(data) > 10 * 1024 * 1024:
-        raise HTTPException(status_code=400, detail="El PDF no puede superar 10 MB")
     path = await store_file(data, "application/pdf", file.filename or "acuerdo.pdf", "legal", user["id"])
     await db.settings.update_one(
         {"key": "legal_pdf"},
@@ -805,7 +865,13 @@ async def download_file(path: str, user: dict = Depends(get_current_user)):
     if not record:
         raise HTTPException(status_code=404, detail="Archivo no encontrado")
     data, content_type = get_object(path)
-    return Response(content=data, media_type=record.get("content_type") or content_type)
+    media = record.get("content_type") or content_type
+    if media not in ("image/jpeg", "image/png", "image/gif", "image/webp", "application/pdf"):
+        media = "application/octet-stream"  # archivos antiguos de tipo dudoso: se descargan, no se ejecutan
+    headers = {"Cache-Control": "private, no-store"}
+    if media.startswith("image/"):
+        headers["Content-Security-Policy"] = "default-src 'none'; img-src 'self'; style-src 'unsafe-inline'"
+    return Response(content=data, media_type=media, headers=headers)
 
 
 # ---------- categories ----------
@@ -883,9 +949,17 @@ async def list_products(q: Optional[str] = None, category: Optional[str] = None,
     if category:
         query["category"] = category
     if q:
-        query["name"] = {"$regex": q, "$options": "i"}
+        query["name"] = {"$regex": re.escape(q.strip()), "$options": "i"}
     docs = await db.products.find(query).sort("name", 1).to_list(500)
-    return [ser(d) for d in docs]
+    # "available" = stock menos lo ya vendido fuera de turno (aún sin descontar). El TPV oculta
+    # automáticamente los productos con available <= 0.
+    reserved = await pending_out_of_shift_qty()
+    out = []
+    for d in docs:
+        item = ser(d)
+        item["available"] = round((d.get("stock") or 0) - reserved.get(item["id"], 0), 3)
+        out.append(item)
+    return out
 
 
 def validate_product(body: ProductBase):
@@ -959,6 +1033,8 @@ async def stock_movement(product_id: str, body: StockMoveIn, user: dict = Depend
     product = await db.products.find_one({"_id": oid(product_id)})
     if not product:
         raise HTTPException(status_code=404, detail="Producto no encontrado")
+    if abs(body.qty) > MAX_QTY:
+        raise HTTPException(status_code=400, detail="Cantidad fuera de rango")
     if body.type in ("entrada", "merma"):
         if body.qty <= 0:
             raise HTTPException(status_code=400, detail="La cantidad tiene que ser mayor que 0")
@@ -970,10 +1046,13 @@ async def stock_movement(product_id: str, body: StockMoveIn, user: dict = Depend
     delta = round(delta, 3)
     query = {"_id": product["_id"]}
     if delta < 0:
-        query["stock"] = {"$gte": -delta - 1e-9}
+        # Lo vendido fuera de turno ya está comprometido: no se puede dar de baja ese stock,
+        # o al abrir el siguiente turno quedaría en negativo.
+        reserved = (await pending_out_of_shift_qty()).get(str(product["_id"]), 0)
+        query["stock"] = {"$gte": -delta + reserved - 1e-9}
     res = await db.products.update_one(query, {"$inc": {"stock": delta}})
     if res.modified_count == 0:
-        raise HTTPException(status_code=400, detail="El stock no puede quedar en negativo")
+        raise HTTPException(status_code=400, detail="El stock no puede quedar en negativo (ten en cuenta lo vendido fuera de turno pendiente de descontar)")
     updated = await db.products.find_one({"_id": product["_id"]})
     before = round(updated["stock"] - delta, 3)
     await record_stock_movement(product, body.type, delta, before, reason or None, user,
@@ -1025,8 +1104,11 @@ async def pending_out_of_shift_qty() -> dict:
 
 
 async def out_of_shift_pending_summary() -> dict:
+    """Ventas (count/total) y recargas (recharges_count/recharges_total) hechas sin turno abierto."""
     docs = await db.sales.find({"out_of_shift": True, "out_of_shift_pending": True}).to_list(5000)
-    return {"count": len(docs), "total": round(sum(s["total"] for s in docs), 2)}
+    recs = await db.recharges.find({"out_of_shift": True, "out_of_shift_pending": True}).to_list(5000)
+    return {"count": len(docs), "total": round(sum(s["total"] for s in docs), 2),
+            "recharges_count": len(recs), "recharges_total": round(sum(r["amount"] for r in recs), 2)}
 
 
 @api_router.post("/sales")
@@ -1081,9 +1163,18 @@ async def create_sale(body: SaleCreate, user: dict = Depends(require_staff)):
         })
     total = round(total, 2)
     # En turno el stock se descuenta ya; fuera de turno se descuenta al abrir la siguiente caja.
+    # El descuento es condicional y atómico: si otra venta simultánea se ha llevado el stock,
+    # se deshace lo descontado y la venta se rechaza (nunca queda stock negativo).
     if not out_of_shift:
-        for item in body.items:
-            await db.products.update_one({"_id": oid(item.product_id)}, {"$inc": {"stock": -round(item.qty, 3)}})
+        done = []
+        for pid, qty in requested.items():
+            q = round(qty, 3)
+            res = await db.products.update_one({"_id": oid(pid), "stock": {"$gte": q - 1e-9}}, {"$inc": {"stock": -q}})
+            if res.modified_count == 0:
+                for done_pid, done_q in done:
+                    await db.products.update_one({"_id": oid(done_pid)}, {"$inc": {"stock": done_q}})
+                raise HTTPException(status_code=409, detail=f"Stock insuficiente de «{products[pid]['name']}»: alguien acaba de venderlo. Revisa el ticket.")
+            done.append((pid, q))
     await db.users.update_one({"_id": socio["_id"]}, {"$inc": {"balance": -total}})
     ticket = await next_seq("ticket")
     sale = {
@@ -1114,6 +1205,8 @@ async def create_sale(body: SaleCreate, user: dict = Depends(require_staff)):
 @api_router.get("/sales")
 async def list_sales(range: str = "today", payment: Optional[str] = None,
                      socio_id: Optional[str] = None, user: dict = Depends(require_staff)):
+    if user["role"] != "admin" and not socio_id:
+        raise HTTPException(status_code=403, detail="El histórico completo de ventas es solo para administración")
     query = {}
     start, _ = day_bounds_madrid(now_utc())
     if range == "today":
@@ -1349,15 +1442,25 @@ async def cash_open(body: CashOpenIn, user: dict = Depends(require_staff)):
             await db.products.update_one({"_id": oid(it["product_id"])}, {"$inc": {"stock": -it["qty"]}})
         await db.sales.update_one({"_id": s["_id"]}, {"$set": {
             "out_of_shift_pending": False, "cash_session_id": sid, "absorbed_at": now_utc()}})
+    # Recargas fuera de turno: su efectivo pasa al esperado de este turno.
+    pending_rec = await db.recharges.find({"out_of_shift": True, "out_of_shift_pending": True}).sort("created_at", 1).to_list(5000)
+    for r in pending_rec:
+        await db.recharges.update_one({"_id": r["_id"]}, {"$set": {
+            "out_of_shift_pending": False, "session_id": sid, "absorbed_at": now_utc()}})
     absorbed = {
         "out_of_shift_count": len(pending),
         "out_of_shift_total": round(sum(s["total"] for s in pending), 2),
         "out_of_shift_sale_ids": [str(s["_id"]) for s in pending],
+        "out_of_shift_recharge_count": len(pending_rec),
+        "out_of_shift_recharge_total": round(sum(r["amount"] for r in pending_rec), 2),
+        "out_of_shift_recharge_ids": [str(r["_id"]) for r in pending_rec],
     }
     await db.cash_sessions.update_one({"_id": doc["_id"]}, {"$set": absorbed})
     doc.update(absorbed)
     await build_stocktake(doc, "opening", user)
     extra = f" · {absorbed['out_of_shift_count']} ventas fuera de turno incorporadas ({absorbed['out_of_shift_total']} Cr)" if pending else ""
+    if pending_rec:
+        extra += f" · {len(pending_rec)} recargas fuera de turno incorporadas ({absorbed['out_of_shift_recharge_total']} Cr en efectivo)"
     await log_activity(user, "caja_apertura_iniciada", f"Apertura de turno iniciada con {doc['starting_amount']} Cr de fondo{extra}")
     return ser(doc)
 
@@ -1395,6 +1498,10 @@ async def cash_opening_cancel(user: dict = Depends(require_admin)):
             await db.products.update_one({"_id": oid(it["product_id"])}, {"$inc": {"stock": it["qty"]}})
         await db.sales.update_one({"_id": s["_id"]}, {"$set": {"out_of_shift_pending": True, "cash_session_id": None},
                                                       "$unset": {"absorbed_at": ""}})
+    rec_ids = [oid(i) for i in session.get("out_of_shift_recharge_ids", [])]
+    if rec_ids:
+        await db.recharges.update_many({"_id": {"$in": rec_ids}}, {"$set": {"out_of_shift_pending": True, "session_id": None},
+                                                                  "$unset": {"absorbed_at": ""}})
     await db.stocktakes.update_many({"session_id": str(session["_id"]), "status": "draft"},
                                     {"$set": {"status": "cancelled", "cancelled_at": now_utc(), "cancelled_by": user["name"]}})
     await db.cash_sessions.update_one({"_id": session["_id"]}, {
@@ -1402,7 +1509,7 @@ async def cash_opening_cancel(user: dict = Depends(require_admin)):
         "$unset": {"active_lock": ""}})
     await log_activity(user, "caja_apertura_cancelada",
                        f"Apertura del turno de {session['opened_by']} cancelada por administración · "
-                       f"{len(sales)} ventas fuera de turno vuelven a pendientes")
+                       f"{len(sales)} ventas y {len(rec_ids)} recargas fuera de turno vuelven a pendientes")
     return {"ok": True}
 
 
@@ -1482,6 +1589,8 @@ async def cash_stocktake_line(body: StocktakeLineIn, user: dict = Depends(requir
         raise HTTPException(status_code=400, detail="No hay ningún recuento en curso")
     if body.counted is not None and body.counted < 0:
         raise HTTPException(status_code=400, detail="La cantidad contada no puede ser negativa")
+    if body.counted is not None and body.counted > MAX_QTY:
+        raise HTTPException(status_code=400, detail="Cantidad contada fuera de rango")
     lines = st["lines"]
     line = next((l for l in lines if l["product_id"] == body.product_id), None)
     if not line:
@@ -1576,7 +1685,11 @@ async def cash_session_report(session_id: str, user: dict = Depends(require_admi
     opening = await db.stocktakes.find_one({"session_id": sid, "kind": "opening", "status": "final"})
     ids = [oid(i) for i in session.get("out_of_shift_sale_ids", [])]
     oos = await db.sales.find({"_id": {"$in": ids}}).sort("created_at", 1).to_list(5000) if ids else []
+    rec_ids = [oid(i) for i in session.get("out_of_shift_recharge_ids", [])]
+    oos_rec = await db.recharges.find({"_id": {"$in": rec_ids}}).sort("created_at", 1).to_list(5000) if rec_ids else []
     return {
+        "out_of_shift_recharges": [{"id": str(r["_id"]), "socio_name": r.get("socio_name"), "amount": r["amount"],
+                                    "created_at": r["created_at"]} for r in oos_rec],
         "session": ser(session),
         "stocktake": ser(closing),
         "opening_stocktake": ser(opening),
@@ -1738,31 +1851,39 @@ async def startup():
     await db.stock_movements.create_index([("product_id", 1), ("created_at", -1)])
     await db.public_hits.create_index("at", expireAfterSeconds=60 * 60 * 24)
 
+    if len(os.environ.get("JWT_SECRET", "")) < 32:
+        logger.warning("JWT_SECRET es demasiado corto: usa una frase aleatoria de al menos 32 caracteres")
+
+    # Los datos de ejemplo (cajero, productos, socios) se crean solo en el primer arranque de una base
+    # vacía: si luego se borran, no reaparecen con contraseñas conocidas.
+    first_boot = await db.users.count_documents({}) == 0 and not await db.settings.find_one({"key": "seeded"})
     admin_email = os.environ.get("ADMIN_EMAIL", "admin@weedlemon.es").lower()
     admin_password = os.environ.get("ADMIN_PASSWORD", "admin123")
     existing = await db.users.find_one({"email": admin_email})
-    if existing is None:
+    if existing is None and (first_boot or not await db.users.find_one({"role": "admin"})):
         await db.users.insert_one({
             "name": "Administrador", "email": admin_email, "role": "admin",
             "password_hash": hash_password(admin_password), "status": "activa",
             "created_at": now_utc()})
         logger.info("Admin creado: %s", admin_email)
-    elif not verify_password(admin_password, existing.get("password_hash", "")):
-        await db.users.update_one({"email": admin_email}, {"$set": {"password_hash": hash_password(admin_password)}})
+    elif existing is not None and os.environ.get("ADMIN_RESET_PASSWORD", "").lower() == "true":
+        # Solo si se pide expresamente (p. ej. contraseña olvidada): ya no se reescribe en cada arranque
+        await db.users.update_one({"_id": existing["_id"]}, {"$set": {"password_hash": hash_password(admin_password)}})
+        logger.warning("Contraseña del administrador restablecida desde ADMIN_PASSWORD")
 
-    if not await db.users.find_one({"email": "cajero@weedlemon.es"}):
+    if first_boot and not await db.users.find_one({"email": "cajero@weedlemon.es"}):
         await db.users.insert_one({
             "name": "Carmen Ruiz", "email": "cajero@weedlemon.es", "role": "cajero",
             "password_hash": hash_password("cajero123"), "status": "activa",
             "created_at": now_utc()})
 
-    if await db.products.count_documents({}) == 0:
+    if first_boot and await db.products.count_documents({}) == 0:
         for p in SEED_PRODUCTS:
             p["created_at"] = now_utc()
             await db.products.insert_one(p)
         logger.info("Productos de ejemplo cargados")
 
-    if await db.users.count_documents({"role": "socio"}) == 0:
+    if first_boot and await db.users.count_documents({"role": "socio"}) == 0:
         for s in SEED_SOCIOS:
             n = await next_seq("member")
             await db.users.insert_one({**s, "role": "socio", "status": "activa",
@@ -1778,6 +1899,7 @@ async def startup():
             await db.categories.insert_one({**c, "created_at": now_utc()})
         logger.info("Categorías por defecto creadas")
 
+    await db.settings.update_one({"key": "seeded"}, {"$setOnInsert": {"key": "seeded", "at": now_utc()}}, upsert=True)
     await migrate()
     try:
         await db.cash_sessions.create_index("active_lock", unique=True, sparse=True)
@@ -1801,10 +1923,61 @@ async def shutdown_db_client():
 
 app.include_router(api_router)
 
+class SecurityMiddleware:
+    """Protección CSRF y cabeceras de seguridad para toda la API.
+
+    - CSRF: en producción las cookies de sesión van con SameSite=None, así que otra web podría intentar
+      lanzar peticiones con la sesión del usuario. Toda petición que modifica datos debe llevar la
+      cabecera X-Requested-With (la pone el frontend); un navegador no deja que otra web la añada
+      sin pasar por CORS, que solo admite el origen del frontend.
+    - Cabeceras: nosniff, sin iframes, sin enviar la URL a terceros.
+    """
+    UNSAFE = {"POST", "PUT", "PATCH", "DELETE"}
+    HEADERS = [
+        (b"x-content-type-options", b"nosniff"),
+        (b"x-frame-options", b"DENY"),
+        (b"referrer-policy", b"no-referrer"),
+        (b"permissions-policy", b"camera=(self), microphone=(), geolocation=()"),
+    ]
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            return await self.app(scope, receive, send)
+        if scope["method"] in self.UNSAFE and scope["path"].startswith("/api/"):
+            headers = {k.lower(): v for k, v in scope.get("headers", [])}
+            if headers.get(b"x-requested-with", b"").lower() != b"xmlhttprequest":
+                body = '{"detail":"Petición rechazada: falta la cabecera de seguridad (CSRF)"}'.encode("utf-8")
+                await send({"type": "http.response.start", "status": 403,
+                            "headers": [(b"content-type", b"application/json"), (b"content-length", str(len(body)).encode())] + self.HEADERS})
+                await send({"type": "http.response.body", "body": body})
+                return
+
+        async def send_with_headers(message):
+            if message["type"] == "http.response.start":
+                existing = {k.lower() for k, _ in message.get("headers", [])}
+                message = dict(message)
+                message["headers"] = list(message.get("headers", [])) + [h for h in self.HEADERS if h[0] not in existing]
+            await send(message)
+
+        await self.app(scope, receive, send_with_headers)
+
+
+def allowed_origins():
+    origins = [os.environ.get("FRONTEND_URL", "http://localhost:3000")]
+    if not COOKIE_SECURE:  # modo local
+        origins.append("http://localhost:3000")
+    return sorted(set(origins))
+
+
+# Orden: el último añadido es el más externo. CORS va fuera para que también los rechazos lleven sus cabeceras.
+app.add_middleware(SecurityMiddleware)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[os.environ.get("FRONTEND_URL", "http://localhost:3000"), "http://localhost:3000"],
+    allow_origins=allowed_origins(),
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=["Content-Type", "X-Requested-With", "Authorization"],
 )

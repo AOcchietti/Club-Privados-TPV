@@ -3,6 +3,8 @@ import axios from "axios";
 const api = axios.create({
   baseURL: `${process.env.REACT_APP_BACKEND_URL}/api`,
   withCredentials: true,
+  // Cabecera anti-CSRF: el backend rechaza cualquier petición que modifique datos sin ella.
+  headers: { "X-Requested-With": "XMLHttpRequest" },
 });
 
 export function apiError(e, fallback = "Algo salió mal. Inténtalo de nuevo.") {

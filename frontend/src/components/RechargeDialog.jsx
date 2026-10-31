@@ -10,13 +10,18 @@ export default function RechargeDialog({ socio, open, onClose, onDone }) {
   const [amount, setAmount] = useState("20");
   const [method, setMethod] = useState("efectivo");
   const [saving, setSaving] = useState(false);
+  const [cash, setCash] = useState(undefined); // undefined = cargando, null = sin turno abierto
 
   useEffect(() => {
     if (open) {
       setAmount("20");
       setMethod("efectivo");
+      setCash(undefined);
+      api.get("/cash/current").then((r) => setCash(r.data.session)).catch(() => setCash(null));
     }
   }, [open]);
+
+  const paused = cash && cash.status !== "open";
 
   if (!socio) return null;
 
@@ -24,7 +29,11 @@ export default function RechargeDialog({ socio, open, onClose, onDone }) {
     setSaving(true);
     try {
       const res = await api.post(`/users/${socio.id}/recharge`, { amount: parseFloat(amount) || 0, method });
-      toast.success(`Saldo recargado · ${socio.name} ahora tiene ${fmtEUR(res.data.balance)}`);
+      toast.success(
+        res.data.recharge_out_of_shift
+          ? `Saldo recargado (fuera de turno) · ${socio.name} ahora tiene ${fmtEUR(res.data.balance)}. El efectivo se sumará al próximo turno.`
+          : `Saldo recargado · ${socio.name} ahora tiene ${fmtEUR(res.data.balance)}`
+      );
       onDone?.(res.data);
       onClose();
     } catch (e) {
@@ -71,9 +80,20 @@ export default function RechargeDialog({ socio, open, onClose, onDone }) {
           data-testid="recharge-amount-input"
           className="w-full px-4 py-3 rounded-xl border border-slate-300 focus:outline-none focus:ring-2 focus:ring-emerald-400 font-mono-num font-bold text-lg text-center"
         />
-        <p className="text-xs text-slate-500 bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 flex items-center gap-2">
-          <Banknote className="w-4 h-4 text-emerald-600 shrink-0" /> Las recargas se hacen siempre en efectivo y entran en la caja del turno abierto.
-        </p>
+        {cash === null ? (
+          <p className="text-xs text-sky-800 bg-sky-50 border border-sky-200 rounded-xl px-3 py-2 flex items-start gap-2" data-testid="recharge-out-of-shift-note">
+            <Banknote className="w-4 h-4 text-sky-600 shrink-0 mt-0.5" />
+            <span>No hay turno abierto: el saldo se carga ya y el efectivo se sumará a la caja del <b>próximo turno</b>. Guárdalo aparte, sin mezclarlo con el fondo.</span>
+          </p>
+        ) : paused ? (
+          <p className="text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded-xl px-3 py-2 flex items-center gap-2" data-testid="recharge-paused-note">
+            <Banknote className="w-4 h-4 text-amber-600 shrink-0" /> La caja está en {cash.status === "opening" ? "apertura" : "cierre"}: espera a que termine para recargar.
+          </p>
+        ) : (
+          <p className="text-xs text-slate-500 bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 flex items-center gap-2">
+            <Banknote className="w-4 h-4 text-emerald-600 shrink-0" /> Las recargas se hacen siempre en efectivo y entran en la caja del turno abierto.
+          </p>
+        )}
         <div className="bg-emerald-50 border border-emerald-200 rounded-xl px-4 py-2.5 text-sm flex justify-between">
           <span className="text-emerald-800">Nuevo saldo</span>
           <span className="font-mono-num font-bold text-emerald-700" data-testid="recharge-new-balance">
@@ -82,7 +102,7 @@ export default function RechargeDialog({ socio, open, onClose, onDone }) {
         </div>
         <button
           onClick={recharge}
-          disabled={saving || !(parseFloat(amount) > 0)}
+          disabled={saving || paused || cash === undefined || !(parseFloat(amount) > 0)}
           className="btn-secondary w-full"
           data-testid="recharge-confirm-btn"
         >

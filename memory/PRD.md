@@ -64,6 +64,13 @@ Frontend copiado tal cual de la preview de Emergent; backend reconstruido a part
 - Gestión: filtros por categoría, inactivos siempre al final y atenuados (sin etiqueta "Activo"); el motivo es opcional en las entradas de stock (sigue siendo obligatorio en mermas y ajustes). El stock sigue visible aquí.
 - PDF con el resumen del cierre (`GET /cash/sessions/{id}/report.pdf`, admin o responsable del turno): turno, arqueo, ventas, productos vendidos, movimientos de caja y diferencias de los recuentos. Se descarga con un enlace directo: aviso con botón al cerrar el turno, icono en cada fila del histórico y botón en el informe del turno. Generado sin dependencias (`backend/cierre_pdf.py`).
 
+## Implementado (31/10/2026, iteración 7 · rama `demo`)
+- Recargas también sin turno abierto: el saldo sube al momento y el efectivo se incorpora al esperado del siguiente turno (como las ventas fuera de turno). Avisos en Caja y en el diálogo de recarga; aparecen en el informe y en el PDF del turno que las incorpora. Durante la apertura y el cierre siguen en pausa.
+- PDF de cierre en una sola página A4 y sin la lista de productos vendidos; si hay muchos movimientos o diferencias, lista los primeros y añade "y N más".
+- El TPV oculta automáticamente los productos sin stock disponible (stock menos lo vendido fuera de turno pendiente, campo `available`).
+- Auditoría de seguridad (tríada CIA) con 18 correcciones: ver `docs/AUDITORIA_SEGURIDAD.md`. Destacan el fallo permanente del login tras 5 intentos, la protección CSRF (cabecera `X-Requested-With` obligatoria), solo imágenes reales en las subidas, la eliminación de la analítica de Emergent con grabación de sesiones, las ventas atómicas, la protección del stock vendido fuera de turno y los datos de ejemplo solo en el primer arranque.
+- Batería de pruebas en `backend/tests` (`python tests/run_all.py`): funcionales, seguridad, invariantes con simulación aleatoria y mutación.
+
 ## Backlog priorizado
 - P0: nada bloqueante pendiente.
 - P1: impresión/exportación de tickets y cierres (PDF/Z-report); límites de dispensación por socio/día (normativa CSC); caducidad de membresía con avisos; vista de socios con deuda (filtro en lista de socios).
