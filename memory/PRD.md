@@ -89,6 +89,7 @@ Frontend copiado tal cual de la preview de Emergent; backend reconstruido a part
 - `FILE_STORAGE=mongo`: fotos y PDF dentro de MongoDB (`file_blobs`). El backend sirve el frontend compilado si existe (`frontend/build`): app y API en la misma web. `COOKIE_SAMESITE` configurable.
 - Tipografías alojadas en la app (`@fontsource`), sin Google Fonts.
 - Despliegue: `Dockerfile` (un solo servicio), `render.yaml`, guía `docs/DESPLIEGUE.md`.
+- Arreglado `GET /auth/me` (error 500 desde el código original: al recargar la página se perdía la sesión), detectado por la prueba contra el servidor real.
 - GitHub Actions (`.github/workflows/pruebas.yml`) con MongoDB 8 real: pruebas internas, `tests/e2e_real.py` por HTTP antes y después de reiniciar, imagen Docker en modo producción con contenedor nuevo, navegador real (`tests/ui_smoke.py`), `pip-audit` y `npm audit`.
 
 ## Backlog priorizado

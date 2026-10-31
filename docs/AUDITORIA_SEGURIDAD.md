@@ -4,12 +4,12 @@ Rama `demo` · 31/10/2026
 
 ## Resumen
 
-- **26 problemas encontrados y corregidos**: 5 de gravedad alta, 9 media y 12 baja. La tabla con todos está más abajo.
+- **27 problemas encontrados y corregidos**: 5 de gravedad alta, 10 media y 12 baja. La tabla con todos está más abajo.
 - **El más grave**: al quinto intento de contraseña fallido, el login daba un error interno, y lo seguía dando para siempre para esa persona desde esa conexión. Venía del código original.
 - **Datos personales**: la aplicación enviaba grabaciones de pantalla a un servicio de analítica de Emergent, incluido el formulario de alta. Se ha eliminado.
 - **Pruebas automáticas**: cuatro bloques en `backend/tests` que hacen **más de 3,8 millones de comprobaciones** y pasan todas. Se repiten con `python tests/run_all.py`.
 - **Las propias pruebas están verificadas**: se metieron **20 errores a propósito** en copias del servidor y las pruebas detectaron los 20.
-- **Servidor real**: GitHub repite las pruebas en cada push con FastAPI, bcrypt y **MongoDB 8 reales**, recorre la app por HTTP, arranca la imagen de despliegue, abre la app en un navegador y busca vulnerabilidades en las dependencias.
+- **Servidor real**: GitHub repite las pruebas en cada push con FastAPI, bcrypt y **MongoDB 8 reales**, recorre la app por HTTP, arranca la imagen de despliegue, abre la app en un navegador y busca vulnerabilidades en las dependencias. Resultado a 31/10/2026: todo en verde, `pip-audit` y `npm audit` (lo que llega al navegador) sin vulnerabilidades. Esta prueba encontró además el fallo n.º 27, que venía del código original.
 
 ## Alcance y método
 
@@ -32,7 +32,7 @@ Cada riesgo se ha clasificado según la **tríada CIA**:
    - Mapa automático de quién puede llamar a cada una, obtenido del propio código.
    - Búsqueda de patrones peligrosos: ejecución de código, consultas sin escapar, secretos escritos en el repositorio.
 2. **Pruebas funcionales de punta a punta** (`test_flows.py`, 234 comprobaciones). Recorren los procesos reales en orden: productos, inventario, ventas y recargas con y sin turno, apertura, recuento, cierre, PDF (incluidos los umbrales de descuadre), catálogo de refrescos y dulces, cantidades enteras en productos por unidades, subcategorías, botón de rellenar todo el recuento, alta pública con QR, usuarios y migración de datos antiguos.
-3. **Pruebas de seguridad por la tríada CIA** (`test_security.py`, 161 comprobaciones).
+3. **Pruebas de seguridad por la tríada CIA** (`test_security.py`, 162 comprobaciones).
    - **Confidencialidad**:
      - Control de acceso de las 52 rutas.
      - Tokens manipulados: caducados, firmados con otra clave, de otro tipo, con algoritmo "none", con rol falsificado.
@@ -109,6 +109,7 @@ Cada riesgo se ha clasificado según la **tríada CIA**:
 | 24 | Con bcrypt 5, una contraseña de más de 72 bytes daba error interno al crearla. | A | Baja | Corregido: se rechaza con un mensaje; las guardadas siguen valiendo |
 | 25 | Las tipografías se cargaban de **Google Fonts**: Google recibía la IP de quien abría el TPV o el formulario de alta. | C | Baja | Corregido: alojadas en la propia app |
 | 26 | Cada instalación del frontend descargaba paquetes de `assets.emergent.sh` (herramientas de la preview). | I | Baja | Corregido: eliminados |
+| 27 | `GET /api/auth/me` daba **error interno** siempre: al recargar la página la app no reconocía la sesión y mandaba al login. Venía del código original; lo encontró la prueba contra el servidor real. | A | Media | Corregido y con prueba |
 
 ### Lo que ya estaba bien
 
@@ -131,6 +132,8 @@ Cada riesgo se ha clasificado según la **tríada CIA**:
 | Google Fonts | Hecho (n.º 25) |
 | Probar con el servidor y MongoDB reales | Hecho: GitHub Actions con MongoDB 8, Docker y navegador |
 | RGPD: copias cifradas, plazo de conservación de las fotos | Fuera del código: activar las copias de Atlas y decidir el plazo |
+
+Las fotos de los 10 productos de ejemplo se enlazan desde Pexels (un banco de imágenes): al subir las fotos propias del club desde Gestión dejan de pedirse a terceros.
 
 Pendiente de mantenimiento (no urgente): Motor, el driver de MongoDB, está en desuso desde 2025 y deja de tener soporte el 14/05/2027 (cambiar a la API asíncrona de PyMongo); Create React App no tiene mantenimiento (pasar a Vite). Los avisos que quedan en `npm audit` completo son de sus herramientas de compilación, que no llegan al navegador.
 
