@@ -348,6 +348,9 @@ class APIRouter:
 
 
 class FastAPI:
+    def __init__(self, **kw):
+        self.lifespan = kw.get("lifespan")
+
     def on_event(self, name):
         return lambda fn: fn
 
@@ -369,8 +372,14 @@ sys.modules["fastapi"] = fastapi
 # ---------------- bcrypt ----------------
 bcrypt = types.ModuleType("bcrypt")
 bcrypt.gensalt = lambda: b""
-bcrypt.hashpw = lambda pw, salt: b"h:" + pw
-bcrypt.checkpw = lambda pw, hashed: hashed == b"h:" + pw
+def _bcrypt5_limit(pw):  # como bcrypt 5: error si la contraseña supera 72 bytes
+    if len(pw) > 72:
+        raise ValueError("password cannot be longer than 72 bytes")
+    return pw
+
+
+bcrypt.hashpw = lambda pw, salt: b"h:" + _bcrypt5_limit(pw)
+bcrypt.checkpw = lambda pw, hashed: hashed == b"h:" + _bcrypt5_limit(pw)
 sys.modules["bcrypt"] = bcrypt
 
 

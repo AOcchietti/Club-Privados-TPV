@@ -1,7 +1,7 @@
 import axios from "axios";
 
 const api = axios.create({
-  baseURL: `${process.env.REACT_APP_BACKEND_URL}/api`,
+  baseURL: `${process.env.REACT_APP_BACKEND_URL || ""}/api`, // vacío = la API está en la misma web (Dockerfile)
   withCredentials: true,
   // Cabecera anti-CSRF: el backend rechaza cualquier petición que modifique datos sin ella.
   headers: { "X-Requested-With": "XMLHttpRequest" },
@@ -78,10 +78,10 @@ export async function uploadPhoto(file) {
   const fd = new FormData();
   fd.append("file", file);
   const res = await api.post("/upload", fd, { headers: { "Content-Type": "multipart/form-data" } });
-  return `${process.env.REACT_APP_BACKEND_URL}/api/files/${res.data.path}`;
+  return `${BACKEND}/api/files/${res.data.path}`;
 }
 
-export const BACKEND = process.env.REACT_APP_BACKEND_URL;
+export const BACKEND = process.env.REACT_APP_BACKEND_URL || "";
 
 // Enlace directo al PDF del cierre: es una descarga normal del navegador (con la sesión por cookie).
 // Si algo falla, el motivo se ve en la pestaña que se abre.

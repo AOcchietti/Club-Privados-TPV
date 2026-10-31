@@ -1,4 +1,6 @@
 from dotenv import load_dotenv
+import asyncio
+from contextlib import asynccontextmanager
 load_dotenv()
 
 import io
@@ -31,7 +33,15 @@ mongo_url = os.environ["MONGO_URL"]
 client = AsyncIOMotorClient(mongo_url)
 db = client[os.environ["DB_NAME"]]
 
-app = FastAPI()
+@asynccontextmanager
+async def lifespan(_app):
+    """Arranque y parada del servidor. Starlette 1.x eliminó @app.on_event: se usa lifespan."""
+    await startup()
+    yield
+    client.close()
+
+
+app = FastAPI(lifespan=lifespan)
 api_router = APIRouter(prefix="/api")
 
 JWT_ALGORITHM = "HS256"
@@ -44,30 +54,41 @@ logger = logging.getLogger("weedlemon")
 
 # ---------- helpers ----------
 
+# bcrypt solo usa los primeros 72 bytes. Hasta bcrypt 4 el resto se ignoraba en silencio; bcrypt 5 da error.
+# Se recorta siempre igual para que las contraseñas ya guardadas sigan funcionando con cualquier versión.
+BCRYPT_MAX_BYTES = 72
+
+
+def _pw_bytes(password: str) -> bytes:
+    return (password or "").encode("utf-8")[:BCRYPT_MAX_BYTES]
+
+
 def hash_password(password: str) -> str:
-    return bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
+    return bcrypt.hashpw(_pw_bytes(password), bcrypt.gensalt()).decode("utf-8")
 
 
 def check_password(password: str):
     if len(password or "") < 8:
         raise HTTPException(status_code=400, detail="La contraseña debe tener al menos 8 caracteres")
+    if len((password or "").encode("utf-8")) > BCRYPT_MAX_BYTES:
+        raise HTTPException(status_code=400, detail="La contraseña no puede superar 72 caracteres")
 
 
 def verify_password(plain: str, hashed: str) -> bool:
     try:
-        return bcrypt.checkpw(plain.encode("utf-8"), hashed.encode("utf-8"))
+        return bcrypt.checkpw(_pw_bytes(plain), hashed.encode("utf-8"))
     except Exception:
         return False
 
 
 def create_access_token(user_id: str, email: str, role: str) -> str:
-    payload = {"sub": user_id, "email": email, "role": role, "type": "access",
+    payload = {"sub": user_id, "email": email, "role": role, "type": "access", "jti": uuid.uuid4().hex,
                "exp": datetime.now(timezone.utc) + timedelta(minutes=60 * 8)}
     return jwt.encode(payload, os.environ["JWT_SECRET"], algorithm=JWT_ALGORITHM)
 
 
 def create_refresh_token(user_id: str) -> str:
-    payload = {"sub": user_id, "type": "refresh",
+    payload = {"sub": user_id, "type": "refresh", "jti": uuid.uuid4().hex,
                "exp": datetime.now(timezone.utc) + timedelta(days=7)}
     return jwt.encode(payload, os.environ["JWT_SECRET"], algorithm=JWT_ALGORITHM)
 
@@ -75,7 +96,10 @@ def create_refresh_token(user_id: str) -> str:
 # En producción (https) las cookies van Secure + SameSite=None. En local (http://localhost)
 # se pone COOKIE_SECURE=false en el .env y pasan a SameSite=Lax.
 COOKIE_SECURE = os.environ.get("COOKIE_SECURE", "true").strip().lower() not in ("false", "0", "no")
-COOKIE_SAMESITE = "none" if COOKIE_SECURE else "lax"
+# Si la app y la API se sirven desde la misma web (Dockerfile), COOKIE_SAMESITE=lax es más seguro.
+COOKIE_SAMESITE = (os.environ.get("COOKIE_SAMESITE") or "").strip().lower()
+if COOKIE_SAMESITE not in ("lax", "strict", "none") or (COOKIE_SAMESITE == "none" and not COOKIE_SECURE):
+    COOKIE_SAMESITE = "none" if COOKIE_SECURE else "lax"
 
 
 def set_access_cookie(response: Response, access: str):
@@ -125,6 +149,10 @@ async def log_activity(actor: dict, action: str, details: str):
     })
 
 
+async def is_revoked(payload: dict) -> bool:
+    return bool(payload.get("jti")) and await db.revoked_tokens.find_one({"jti": payload["jti"]}) is not None
+
+
 async def get_current_user(request: Request) -> dict:
     token = request.cookies.get("access_token")
     if not token:
@@ -137,6 +165,8 @@ async def get_current_user(request: Request) -> dict:
         payload = jwt.decode(token, os.environ["JWT_SECRET"], algorithms=[JWT_ALGORITHM])
         if payload.get("type") != "access":
             raise HTTPException(status_code=401, detail="Token inválido")
+        if await is_revoked(payload):  # sesión cerrada: el token copiado ya no sirve
+            raise HTTPException(status_code=401, detail="Sesión cerrada")
         try:
             uid = ObjectId(payload.get("sub"))
         except (InvalidId, TypeError):
@@ -253,9 +283,13 @@ def init_storage(force: bool = False):
     return storage_key
 
 
-# Sin EMERGENT_LLM_KEY (por ejemplo en local) los archivos se guardan en disco, en backend/uploads/
-# o en la carpeta indicada en LOCAL_STORAGE_DIR.
-STORAGE_MODE = "emergent" if (os.environ.get("EMERGENT_LLM_KEY") or "").strip() else "local"
+# Dónde se guardan fotos y PDF (FILE_STORAGE):
+#   local    → en disco, en backend/uploads/ o en LOCAL_STORAGE_DIR (por defecto sin EMERGENT_LLM_KEY)
+#   mongo    → dentro de MongoDB (colección file_blobs). Para servidores sin disco permanente (Render, Railway…)
+#   emergent → almacenamiento de Emergent (por defecto si hay EMERGENT_LLM_KEY)
+STORAGE_MODE = (os.environ.get("FILE_STORAGE") or "").strip().lower()
+if STORAGE_MODE not in ("local", "mongo", "emergent"):
+    STORAGE_MODE = "emergent" if (os.environ.get("EMERGENT_LLM_KEY") or "").strip() else "local"
 LOCAL_STORAGE_DIR = Path(os.environ.get("LOCAL_STORAGE_DIR") or Path(__file__).parent / "uploads").resolve()
 
 
@@ -266,12 +300,7 @@ def local_path(path: str) -> Path:
     return target
 
 
-def put_object(path: str, data: bytes, content_type: str) -> dict:
-    if STORAGE_MODE == "local":
-        target = local_path(path)
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_bytes(data)
-        return {"path": path, "size": len(data)}
+def _emergent_put(path: str, data: bytes, content_type: str) -> dict:
     key = init_storage()
     resp = requests.put(
         f"{STORAGE_URL}/objects/{path}",
@@ -281,16 +310,38 @@ def put_object(path: str, data: bytes, content_type: str) -> dict:
     return resp.json()
 
 
-def get_object(path: str):
+def _emergent_get(path: str):
+    key = init_storage()
+    resp = requests.get(f"{STORAGE_URL}/objects/{path}", headers={"X-Storage-Key": key}, timeout=60)
+    resp.raise_for_status()
+    return resp.content, resp.headers.get("Content-Type", "application/octet-stream")
+
+
+async def put_object(path: str, data: bytes, content_type: str) -> dict:
+    if STORAGE_MODE == "local":
+        target = local_path(path)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(data)
+        return {"path": path, "size": len(data)}
+    if STORAGE_MODE == "mongo":  # cada archivo es un documento (las subidas tienen tope de 10 MB < 16 MB de MongoDB)
+        await db.file_blobs.update_one({"path": path}, {"$set": {"path": path, "data": data, "content_type": content_type,
+                                                                 "size": len(data), "created_at": now_utc()}}, upsert=True)
+        return {"path": path, "size": len(data)}
+    return await asyncio.to_thread(_emergent_put, path, data, content_type)
+
+
+async def get_object(path: str):
     if STORAGE_MODE == "local":
         target = local_path(path)
         if not target.is_file():
             raise HTTPException(status_code=404, detail="Archivo no encontrado")
         return target.read_bytes(), mimetypes.guess_type(target.name)[0] or "application/octet-stream"
-    key = init_storage()
-    resp = requests.get(f"{STORAGE_URL}/objects/{path}", headers={"X-Storage-Key": key}, timeout=60)
-    resp.raise_for_status()
-    return resp.content, resp.headers.get("Content-Type", "application/octet-stream")
+    if STORAGE_MODE == "mongo":
+        blob = await db.file_blobs.find_one({"path": path})
+        if not blob:
+            raise HTTPException(status_code=404, detail="Archivo no encontrado")
+        return bytes(blob["data"]), blob.get("content_type") or "application/octet-stream"
+    return await asyncio.to_thread(_emergent_get, path)
 
 
 # ---------- schemas ----------
@@ -455,11 +506,36 @@ async def login(body: LoginIn, request: Request, response: Response):
     return out
 
 
+async def revoke_token(token: Optional[str]) -> Optional[dict]:
+    """Anula un token hasta que caduque (aunque alguien lo hubiera copiado)."""
+    if not token:
+        return None
+    try:
+        payload = jwt.decode(token, os.environ["JWT_SECRET"], algorithms=[JWT_ALGORITHM], options={"verify_exp": False})
+    except jwt.InvalidTokenError:
+        return None
+    if payload.get("jti"):
+        expires = datetime.fromtimestamp(payload.get("exp") or 0, timezone.utc)
+        await db.revoked_tokens.update_one({"jti": payload["jti"]}, {"$set": {"jti": payload["jti"], "expires_at": expires}}, upsert=True)
+    return payload
+
+
 @api_router.post("/auth/logout")
-async def logout(response: Response, user: dict = Depends(get_current_user)):
+async def logout(request: Request, response: Response):
+    # No exige sesión válida: también se puede cerrar con el token de acceso ya caducado.
+    access = await revoke_token(request.cookies.get("access_token"))
+    await revoke_token(request.cookies.get("refresh_token"))
     response.delete_cookie("access_token", path="/")
     response.delete_cookie("refresh_token", path="/")
-    await log_activity(user, "logout", f"{user['name']} cerró sesión")
+    user = None
+    if access and access.get("type") == "access":
+        try:
+            user = await db.users.find_one({"_id": ObjectId(access.get("sub"))})
+        except (InvalidId, TypeError):
+            user = None
+    if user:
+        actor = ser(user)
+        await log_activity(actor, "logout", f"{actor['name']} cerró sesión")
     return {"ok": True}
 
 
@@ -479,6 +555,8 @@ async def refresh(request: Request, response: Response):
             raise HTTPException(status_code=401, detail="Token inválido")
     except jwt.InvalidTokenError:
         raise HTTPException(status_code=401, detail="Token inválido")
+    if await is_revoked(payload):
+        raise HTTPException(status_code=401, detail="Sesión cerrada")
     try:
         user = await db.users.find_one({"_id": ObjectId(payload.get("sub"))})
     except (InvalidId, TypeError):
@@ -699,7 +777,7 @@ def file_ext(filename: Optional[str], content_type: str, default: str) -> str:
 async def store_file(data: bytes, content_type: str, filename: Optional[str], folder: str,
                      created_by: str, public: bool = False) -> str:
     path = f"{APP_NAME}/{folder}/{uuid.uuid4()}.{file_ext(filename, content_type, 'bin')}"
-    result = put_object(path, data, content_type)
+    result = await put_object(path, data, content_type)
     await db.files.insert_one({
         "storage_path": result["path"],
         "original_filename": filename,
@@ -842,7 +920,7 @@ async def public_legal_pdf():
     legal = await db.settings.find_one({"key": "legal_pdf"})
     if not legal:
         raise HTTPException(status_code=404, detail="Todavía no hay acuerdo legal publicado")
-    data, _ = get_object(legal["path"])
+    data, _ = await get_object(legal["path"])
     return Response(content=data, media_type="application/pdf",
                     headers={"Content-Disposition": 'inline; filename="acuerdo-legal-weed-lemon.pdf"'})
 
@@ -877,7 +955,7 @@ async def download_file(path: str, user: dict = Depends(get_current_user)):
     record = await db.files.find_one({"storage_path": path, "is_deleted": False})
     if not record:
         raise HTTPException(status_code=404, detail="Archivo no encontrado")
-    data, content_type = get_object(path)
+    data, content_type = await get_object(path)
     media = record.get("content_type") or content_type
     if media not in ("image/jpeg", "image/png", "image/gif", "image/webp", "application/pdf"):
         media = "application/octet-stream"  # archivos antiguos de tipo dudoso: se descargan, no se ejecutan
@@ -1946,7 +2024,6 @@ async def migrate():
                                        {"$set": {"active_lock": "local"}})
 
 
-@app.on_event("startup")
 async def startup():
     await db.users.create_index("email")
     await db.users.create_index("doc_number")
@@ -1961,7 +2038,11 @@ async def startup():
     await db.public_hits.create_index("at", expireAfterSeconds=60 * 60 * 24)
 
     if len(os.environ.get("JWT_SECRET", "")) < 32:
+        if COOKIE_SECURE:  # producción: con una clave corta se podrían falsificar sesiones
+            raise RuntimeError("JWT_SECRET es demasiado corto: en producción usa una frase aleatoria de al menos 32 caracteres")
         logger.warning("JWT_SECRET es demasiado corto: usa una frase aleatoria de al menos 32 caracteres")
+    if COOKIE_SECURE and os.environ.get("ADMIN_PASSWORD", "admin123") == "admin123":
+        logger.warning("ADMIN_PASSWORD sigue siendo la de ejemplo: cámbiala en un servidor público")
 
     # Los datos de ejemplo (cajero, productos, socios) se crean solo en el primer arranque de una base
     # vacía: si luego se borran, no reaparecen con contraseñas conocidas.
@@ -2016,6 +2097,12 @@ async def startup():
     except Exception as e:  # p. ej. dos turnos activos heredados: se avisa y se sigue arrancando
         logger.error("No se pudo crear el índice de turno único: %s", e)
 
+    await db.revoked_tokens.create_index("jti")
+    await db.revoked_tokens.create_index("expires_at", expireAfterSeconds=0)  # MongoDB los borra al caducar
+    if STORAGE_MODE == "mongo":
+        await db.file_blobs.create_index("path", unique=True)
+        logger.info("Archivos guardados en MongoDB (colección file_blobs)")
+        return
     if STORAGE_MODE == "local":
         logger.info("Almacenamiento local de archivos en %s", LOCAL_STORAGE_DIR)
         return
@@ -2026,12 +2113,24 @@ async def startup():
         logger.error("Storage init falló: %s", e)
 
 
-@app.on_event("shutdown")
-async def shutdown_db_client():
-    client.close()
-
-
 app.include_router(api_router)
+
+# ---------- frontend compilado ----------
+# Si existe frontend/build (o FRONTEND_BUILD_DIR), la app y la API salen de la misma web: sin CORS ni cookies
+# de terceros, que Safari y otros navegadores bloquean. Lo usa el Dockerfile.
+FRONTEND_BUILD = Path(os.environ.get("FRONTEND_BUILD_DIR") or Path(__file__).resolve().parent.parent / "frontend" / "build").resolve()
+if (FRONTEND_BUILD / "index.html").is_file():
+    from fastapi.responses import FileResponse
+
+    @app.get("/{full_path:path}", include_in_schema=False)
+    async def frontend_app(full_path: str):
+        if full_path == "api" or full_path.startswith("api/"):
+            raise HTTPException(status_code=404, detail="No encontrado")
+        target = (FRONTEND_BUILD / full_path).resolve()
+        if full_path and target.is_file() and FRONTEND_BUILD in target.parents:
+            cache = "public, max-age=31536000, immutable" if full_path.startswith("static/") else "no-cache"
+            return FileResponse(target, headers={"Cache-Control": cache})
+        return FileResponse(FRONTEND_BUILD / "index.html", headers={"Cache-Control": "no-cache"})  # rutas de la app (/tpv, /caja…)
 
 class SecurityMiddleware:
     """Protección CSRF y cabeceras de seguridad para toda la API.

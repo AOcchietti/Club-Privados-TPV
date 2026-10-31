@@ -1,0 +1,24 @@
+# Despliegue en Render (Blueprint): New → Blueprint → elegir este repositorio. Guía completa en docs/DESPLIEGUE.md.
+services:
+  - type: web
+    name: weedlemon-tpv
+    runtime: docker
+    plan: starter          # siempre encendido. Con "free" el servicio se duerme tras 15 min sin uso y tarda ~1 min en despertar
+    region: frankfurt
+    branch: demo
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /api/
+    autoDeployTrigger: checksPass   # solo publica una versión nueva si las pruebas de GitHub pasan
+    envVars:
+      - key: MONGO_URL       # cadena de conexión de MongoDB Atlas (se pide al crear el servicio)
+        sync: false
+      - key: DB_NAME
+        value: weedlemon_demo
+      - key: JWT_SECRET      # Render genera una clave aleatoria
+        generateValue: true
+      - key: ADMIN_EMAIL
+        value: admin@weedlemon.es
+      - key: ADMIN_PASSWORD  # contraseña del administrador (se pide al crear el servicio)
+        sync: false
+      - key: FRONTEND_URL    # la dirección pública, p. ej. https://weedlemon-tpv.onrender.com
+        sync: false

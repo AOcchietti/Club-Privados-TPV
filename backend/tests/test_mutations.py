@@ -44,6 +44,10 @@ MUTATIONS = [
      '        return 1e-9\n    price = line.get("price")', '        return 1e-9\n    return 1e-9\n    price = line.get("price")',
      "test_flows.py", "cierre_pdf.py"),
     # --- mutaciones de seguridad: se comprueban con test_security.py ---
+    ("[seguridad] Cerrar sesión no anula el token (una cookie copiada sigue valiendo)",
+     '        if await is_revoked(payload):  # sesión cerrada', '        if False:  # sesión cerrada', "test_security.py"),
+    ("[seguridad] Contraseñas largas rompen el login con bcrypt 5",
+     'return (password or "").encode("utf-8")[:BCRYPT_MAX_BYTES]', 'return (password or "").encode("utf-8")', "test_security.py"),
     ("[seguridad] Sin protección CSRF",
      'if headers.get(b"x-requested-with", b"").lower() != b"xmlhttprequest":', 'if False:', "test_security.py"),
     ("[seguridad] Se aceptan archivos que no son imágenes (SVG/HTML)",

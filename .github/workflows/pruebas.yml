@@ -1,0 +1,171 @@
+# Pruebas en servidores de GitHub con paquetes y MongoDB reales, en cada push a main, demo o V02.
+# Los resultados se ven en la pestaña "Actions" del repositorio y junto a cada commit (✔ / ✘).
+name: Pruebas
+
+on:
+  push:
+    branches: [main, demo, V02]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  backend:
+    name: Backend con MongoDB real
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    services:
+      mongo:
+        image: mongo:8
+        ports: ["27017:27017"]
+        options: >-
+          --health-cmd "mongosh --quiet --eval 'db.runCommand({ping:1})'"
+          --health-interval 5s --health-timeout 5s --health-retries 30
+    env:
+      MONGO_URL: mongodb://localhost:27017
+      DB_NAME: tpv_e2e
+      JWT_SECRET: clave-de-pruebas-de-github-actions-suficientemente-larga-123
+      COOKIE_SECURE: "false"
+      FRONTEND_URL: http://localhost:3000
+      ADMIN_EMAIL: admin@weedlemon.es
+      ADMIN_PASSWORD: admin123
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Instalar dependencias reales
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r backend/requirements.txt pip-audit
+          python - <<'PY'
+          import importlib.metadata as m
+          pk = ["fastapi", "starlette", "uvicorn", "python-multipart", "pydantic", "motor", "pymongo", "bcrypt", "PyJWT", "requests"]
+          print("::notice title=Versiones instaladas::" + ", ".join(f"{p} {m.version(p)}" for p in pk))
+          PY
+      - name: Pruebas internas (funcionales, seguridad, invariantes, mutación)
+        working-directory: backend
+        run: python tests/run_all.py
+      - name: Servidor real · fase 1 (todo el recorrido por HTTP)
+        working-directory: backend
+        run: |
+          uvicorn server:app --port 8001 > /tmp/uvicorn.log 2>&1 &
+          echo $! > /tmp/uvicorn.pid
+          for i in $(seq 60); do curl -sf http://localhost:8001/api/ > /dev/null && break; sleep 1; done
+          python tests/e2e_real.py http://localhost:8001 --si
+      - name: Servidor real · fase 2 (después de reiniciar)
+        working-directory: backend
+        run: |
+          kill "$(cat /tmp/uvicorn.pid)"; sleep 3
+          uvicorn server:app --port 8001 >> /tmp/uvicorn.log 2>&1 &
+          for i in $(seq 60); do curl -sf http://localhost:8001/api/ > /dev/null && break; sleep 1; done
+          python tests/e2e_real.py http://localhost:8001 --si --fase 2
+      - name: Registro del servidor si algo falla
+        if: failure()
+        run: |
+          tail -n 120 /tmp/uvicorn.log || true
+          msg=$(grep -m4 -E "Error|Traceback|Exception" /tmp/uvicorn.log | tr '\n' ' ' | cut -c1-900)
+          [ -n "$msg" ] && echo "::error title=Registro del servidor::$msg" || true
+      - name: Vulnerabilidades conocidas en las dependencias (pip-audit)
+        run: |
+          pip-audit -r backend/requirements.txt --format json --output /tmp/audit.json || true
+          python - <<'PY'
+          import json, sys
+          data = json.load(open("/tmp/audit.json"))
+          deps = data.get("dependencies", [])
+          vulns = [(d["name"], d.get("version"), v) for d in deps for v in d.get("vulns", [])]
+          for name, ver, v in vulns[:10]:
+              fix = ", ".join(v.get("fix_versions") or []) or "sin versión corregida"
+              print(f"::error title=Vulnerabilidad en {name} {ver}::{v['id']} {' '.join(v.get('aliases', []))} · corregida en {fix}")
+          if vulns:
+              sys.exit(1)
+          print(f"::notice title=pip-audit::0 vulnerabilidades conocidas en {len(deps)} paquetes (dependencias incluidas)")
+          PY
+
+  despliegue:
+    name: Imagen de despliegue + navegador real
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    services:
+      mongo:
+        image: mongo:8
+        ports: ["27017:27017"]
+        options: >-
+          --health-cmd "mongosh --quiet --eval 'db.runCommand({ping:1})'"
+          --health-interval 5s --health-timeout 5s --health-retries 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Construir la imagen (frontend + API)
+        run: docker build -t tpv-demo .
+      - name: Arrancar como en producción (HTTPS off solo porque es localhost)
+        run: |
+          cat > /tmp/arrancar.sh <<'SH'
+          docker rm -f tpv > /dev/null 2>&1 || true
+          docker run -d --name tpv --network host \
+            -e MONGO_URL=mongodb://localhost:27017 -e DB_NAME=tpv_produccion_e2e -e JWT_SECRET="$JWT" \
+            -e PORT=8080 -e FRONTEND_URL=http://localhost:8080 \
+            -e ADMIN_EMAIL=admin@weedlemon.es -e ADMIN_PASSWORD=admin123 tpv-demo
+          for i in $(seq 60); do curl -sf http://localhost:8080/api/ > /dev/null && break; sleep 1; done
+          curl -sf http://localhost:8080/api/ > /dev/null || { docker logs tpv | tail -60; exit 1; }
+          SH
+          JWT="$(python3 -c 'import secrets; print(secrets.token_urlsafe(48))')"
+          echo "JWT=$JWT" >> "$GITHUB_ENV"
+          JWT="$JWT" bash /tmp/arrancar.sh
+      - name: La app y la API salen del mismo servidor
+        run: |
+          curl -sf http://localhost:8080/ | grep -q '<div id="root">'
+          curl -sf http://localhost:8080/tpv | grep -q '<div id="root">'
+          test "$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8080/api/no-existe)" = 404
+          if curl -s --path-as-is 'http://localhost:8080/static/../../backend/server.py' | grep -q 'from fastapi'; then echo "::error::se puede leer el código del servidor"; exit 1; fi
+          if curl -sf http://localhost:8080/ | grep -qiE 'googleapis|posthog|emergent'; then echo "::error::la página carga recursos de terceros"; exit 1; fi
+          echo "::notice title=Imagen de despliegue::frontend y API servidos juntos desde un solo contenedor"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Herramientas de prueba
+        run: |
+          pip install requests playwright
+          python -m playwright install --with-deps chromium
+      - name: Servidor en modo producción · fase 1
+        run: python backend/tests/e2e_real.py http://localhost:8080 --si
+      - name: Contenedor nuevo con la misma base de datos · fase 2 (los archivos viven en MongoDB)
+        run: |
+          JWT="$JWT" bash /tmp/arrancar.sh
+          python backend/tests/e2e_real.py http://localhost:8080 --si --fase 2
+      - name: Navegador real (Chromium)
+        run: python backend/tests/ui_smoke.py http://localhost:8080
+      - name: Registro del contenedor si algo falla
+        if: failure()
+        run: |
+          docker logs tpv 2>&1 | tail -n 120 || true
+          msg=$(docker logs tpv 2>&1 | grep -m4 -E "Error|Traceback|Exception" | tr '\n' ' ' | cut -c1-900)
+          [ -n "$msg" ] && echo "::error title=Registro del contenedor::$msg" || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: captura-navegador
+          path: tpv-navegador.png
+          if-no-files-found: ignore
+
+  frontend:
+    name: Dependencias del frontend (informativo)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: npm audit de lo que llega al navegador
+        working-directory: frontend
+        run: |
+          npm install --package-lock-only --ignore-scripts --legacy-peer-deps > /dev/null 2>&1
+          npm audit --omit=dev --json > /tmp/npm-audit.json || true
+          node -e '
+            const a = require("/tmp/npm-audit.json"); const m = (a.metadata || {}).vulnerabilities || {};
+            const v = Object.values(a.vulnerabilities || {});
+            const top = v.filter(x => ["high","critical"].includes(x.severity)).map(x => x.name).slice(0, 12).join(", ");
+            console.log(`::notice title=npm audit (informativo)::críticas ${m.critical||0}, altas ${m.high||0}, medias ${m.moderate||0}, bajas ${m.low||0}. Altas/críticas: ${top || "ninguna"}`);
+          '

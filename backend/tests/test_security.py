@@ -19,7 +19,7 @@ CHK = Checker("seguridad")
 check = CHK
 err = CHK.error
 
-PUBLIC = {("POST", "/auth/login"), ("POST", "/auth/refresh"), ("POST", "/public/upload"), ("POST", "/public/alta"),
+PUBLIC = {("POST", "/auth/login"), ("POST", "/auth/refresh"), ("POST", "/auth/logout"), ("POST", "/public/upload"), ("POST", "/public/alta"),
           ("GET", "/public/legal"), ("GET", "/public/legal.pdf"), ("GET", "/alta/qr.png"), ("GET", "/")}
 ADMIN_ONLY = {("DELETE", "/users/{user_id}"), ("POST", "/settings/legal-pdf"), ("POST", "/cash/opening/cancel"),
               ("POST", "/cash/closing/cancel"), ("GET", "/cash/sessions"), ("GET", "/cash/sessions/{session_id}"),
@@ -130,6 +130,45 @@ async def main():
     await err(S.login(S.LoginIn(email="pepe@x.es", password="pepe-clave-1"), S.Request(ip="7.7.7.7"), S.Response()), 403, "suspendida")
     check(all("password_hash" not in u for u in await S.list_users(role=None, q=None, user=admin)), "nunca se devuelve el hash de contraseñas")
 
+    # Cerrar sesión anula los tokens en el servidor: una copia robada de la cookie deja de servir
+    res = S.Response()
+    await S.login(S.LoginIn(email="cajero@weedlemon.es", password="cajero123"), S.Request(ip="8.8.4.4"), res)
+    acc, ref = res.cookies["access_token"], res.cookies["refresh_token"]
+    check((await S.get_current_user(req(acc)))["email"] == "cajero@weedlemon.es", "sesión válida antes de salir")
+    out_res = S.Response()
+    out_res.cookies = {"access_token": "x", "refresh_token": "y"}
+    await S.logout(S.Request(cookies={"access_token": acc, "refresh_token": ref}), out_res)
+    check(out_res.cookies == {}, "el cierre de sesión borra las cookies")
+    await err(S.get_current_user(req(acc)), 401, "sesión cerrada")
+    await err(S.get_current_user(req(bearer=acc)), 401, "sesión cerrada")
+    await err(S.refresh(S.Request(cookies={"refresh_token": ref}), S.Response()), 401, "sesión cerrada")
+    check(await db.revoked_tokens.count_documents({}) == 2, "los dos tokens quedan anulados hasta que caducan")
+    await S.logout(S.Request(cookies={"access_token": "basura", "refresh_token": token(cajero["id"], minutes=-5)}), S.Response())
+    check(True, "cerrar sesión con tokens caducados o rotos no da error")
+    res = S.Response()
+    await S.login(S.LoginIn(email="cajero@weedlemon.es", password="cajero123"), S.Request(ip="8.8.4.4"), res)
+    check((await S.get_current_user(req(res.cookies["access_token"])))["email"] == "cajero@weedlemon.es", "volver a entrar funciona")
+
+    # bcrypt 5 da error con contraseñas de más de 72 bytes: se rechazan al crearlas y el login nunca falla por ello
+    await err(S.create_user(S.UserCreate(name="Larga", role="cajero", email="larga@x.es", password="ñ" * 40), user=admin), 400, "72")
+    await err(S.login(S.LoginIn(email="cajero@weedlemon.es", password="x" * 500), S.Request(ip="8.8.8.4"), S.Response()), 401)
+    try:
+        same72 = S.verify_password("a" * 72 + "resto", S.hash_password("a" * 72 + "otra"))
+    except ValueError:  # lo que haría bcrypt 5 sin el recorte
+        same72 = False
+    check(same72, "se usan los primeros 72 bytes, como con bcrypt 4 (y bcrypt 5 no da error)")
+
+    # Producción con JWT_SECRET corto: el servidor no arranca
+    real_secret, real_secure = os.environ["JWT_SECRET"], S.COOKIE_SECURE
+    os.environ["JWT_SECRET"], S.COOKIE_SECURE = "corta", True
+    try:
+        await S.startup()
+        check(False, "no debería arrancar con una clave corta en producción")
+    except RuntimeError as e:
+        check("JWT_SECRET" in str(e), "en producción no arranca con JWT_SECRET corto")
+    finally:
+        os.environ["JWT_SECRET"], S.COOKIE_SECURE = real_secret, real_secure
+
     # Datos personales: el cajero no ve al equipo ni el histórico completo; el PDF solo para responsable/admin
     check(all(u["role"] == "socio" for u in await S.list_users(role="admin", q=None, user=cajero)), "el cajero no puede listar al equipo")
     await err(S.list_sales(range="all", payment=None, socio_id=None, user=cajero), 403)
@@ -179,12 +218,12 @@ async def main():
     await err(S.upload_legal_pdf(S.UploadFile("a.pdf", "application/pdf", b"<html>no soy pdf</html>"), user=admin), 400, "pdf")
     # Archivos antiguos de tipo peligroso se sirven como descarga, nunca como página
     await db.files.insert_one({"storage_path": "weedlemon/viejo.html", "content_type": "text/html", "is_deleted": False})
-    S.put_object("weedlemon/viejo.html", b"<script>alert(1)</script>", "text/html")
+    await S.put_object("weedlemon/viejo.html", b"<script>alert(1)</script>", "text/html")
     resp = await S.download_file("weedlemon/viejo.html", user=cajero)
     check(resp.media_type == "application/octet-stream", "HTML antiguo se sirve como descarga")
     resp = await S.download_file(path, user=cajero)
     check("default-src 'none'" in resp.headers.get("Content-Security-Policy", ""), "las imágenes se sirven con CSP restrictiva")
-    await err(asyncio.to_thread(S.get_object, "../../etc/passwd"), 400, "ruta")
+    await err(S.get_object("../../etc/passwd"), 400, "ruta")
     await err(S.download_file("weedlemon/no-registrado.png", user=cajero), 404)
 
     # Inyección: búsquedas tratadas como texto, tipos estrictos, ids validados

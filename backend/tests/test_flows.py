@@ -418,6 +418,22 @@ async def main():
     await S.cash_closing_finalize(user=cajero)
     check((await db.products.find_one({"_id": S.oid(p_fl["id"])}))["stock"] == 5, "cierre con todo rellenado sin cambiar el stock")
 
+    # ----- archivos guardados dentro de MongoDB (FILE_STORAGE=mongo, para servidores sin disco permanente) -----
+    real_mode = S.STORAGE_MODE
+    S.STORAGE_MODE = "mongo"
+    try:
+        await S.startup()
+        up = await S.upload(S.UploadFile("foto.png", "image/png", PNG), user=cajero)
+        blob = await db.file_blobs.find_one({"path": up["path"]})
+        check(blob and blob["data"] == PNG and blob["content_type"] == "image/png", "la foto se guarda en MongoDB")
+        got = await S.download_file(up["path"], user=cajero)
+        check(got.body == PNG and got.media_type == "image/png", "y se descarga igual")
+        await S.upload_legal_pdf(S.UploadFile("acuerdo2.pdf", "application/pdf", b"%PDF-1.4 mongo"), user=admin)
+        check((await S.public_legal_pdf()).body == b"%PDF-1.4 mongo", "el acuerdo legal también")
+        await expect_error(S.get_object("weedlemon/no/existe.png"), 404)
+    finally:
+        S.STORAGE_MODE = real_mode
+
     # ----- reglas añadidas en la auditoría -----
     await expect_error(S.list_sales(range="all", payment=None, socio_id=None, user=cajero), 403, "administración")
     check(isinstance(await S.list_sales(range="all", payment=None, socio_id=lucia["id"], user=cajero), list), "el cajero ve las ventas de un socio")
