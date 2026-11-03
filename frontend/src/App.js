@@ -5,6 +5,7 @@ import { Toaster } from "@/components/ui/sonner";
 import { Citrus } from "lucide-react";
 import Login from "@/pages/Login";
 import AltaPublica from "@/pages/AltaPublica";
+import { RecuperarPassword, RestablecerPassword } from "@/pages/RecuperarPassword";
 import Layout from "@/components/Layout";
 import Dashboard from "@/pages/Dashboard";
 import POS from "@/pages/POS";
@@ -46,6 +47,8 @@ function App() {
           <Routes>
             <Route path="/login" element={<Login />} />
             <Route path="/alta" element={<AltaPublica />} />
+            <Route path="/recuperar" element={<RecuperarPassword />} />
+            <Route path="/restablecer" element={<RestablecerPassword />} />
             <Route
               path="/"
               element={

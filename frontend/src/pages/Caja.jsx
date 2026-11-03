@@ -123,6 +123,7 @@ function StocktakeGrid({ stocktake, onUpdated, onNext, nextLabel }) {
   const [filter, setFilter] = useState("todas");
   const [savingLine, setSavingLine] = useState(null);
   const [filling, setFilling] = useState(null);
+  const [confirmAll, setConfirmAll] = useState(false);
 
   useEffect(() => {
     const c = {};
@@ -152,11 +153,12 @@ function StocktakeGrid({ stocktake, onUpdated, onNext, nextLabel }) {
     }
   };
 
-  const autofill = async (payload, key) => {
+  const autofill = async (payload, key, message = "Contado rellenado con el esperado del sistema") => {
     setFilling(key);
+    setConfirmAll(false);
     try {
       const res = await api.post("/cash/stocktake/autofill", { ...payload, version: stocktake.version });
-      toast.success("Contado rellenado con el esperado del sistema");
+      toast.success(message);
       const c = {};
       for (const l of res.data.lines) {
         c[l.product_id] = l.counted === null || l.counted === undefined ? "" : String(l.counted);
@@ -192,6 +194,14 @@ function StocktakeGrid({ stocktake, onUpdated, onNext, nextLabel }) {
 
   const pendientes = stocktake.lines.filter((l) => l.counted === null || l.counted === undefined).length;
   const discrepancias = stocktake.lines.filter((l) => l.difference !== null && l.difference !== undefined && Math.abs(l.difference) > 1e-9).length;
+  const todoIgual = stocktake.lines.length > 0 && pendientes === 0 && discrepancias === 0;
+
+  // "Contado = esperado en todo el stock": si ya hay productos contados con diferencia, se pregunta antes
+  // para no perder un recuento hecho a mano.
+  const fillAll = () => {
+    if (discrepancias > 0) setConfirmAll(true);
+    else autofill({ all: true }, "all", "Todo el stock rellenado con el esperado del sistema");
+  };
 
   return (
     <div className="space-y-4" data-testid="stocktake-step">
@@ -202,6 +212,38 @@ function StocktakeGrid({ stocktake, onUpdated, onNext, nextLabel }) {
         <span className="badge-inactive" data-testid="stocktake-progress">
           {stocktake.lines.length - pendientes}/{stocktake.lines.length} contados · {discrepancias} con diferencia
         </span>
+        <button
+          onClick={fillAll}
+          disabled={filling !== null || todoIgual}
+          data-testid="stocktake-autofill-all"
+          className={`flex items-center gap-1.5 text-xs font-bold px-3 py-2 rounded-xl border transition-colors ${
+            todoIgual ? "bg-emerald-100 text-emerald-700 border-emerald-200" : "bg-amber-400 text-slate-900 border-amber-400 hover:bg-amber-300"
+          }`}
+        >
+          {filling === "all" || filling === "pending" ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : todoIgual ? <CheckSquare className="w-3.5 h-3.5" /> : <ListChecks className="w-3.5 h-3.5" />}
+          Contado = esperado en todo el stock
+        </button>
+        {confirmAll && (
+          <div className="basis-full rounded-xl border border-amber-300 bg-amber-50 p-3 flex flex-wrap items-center gap-2" data-testid="stocktake-autofill-all-confirm">
+            <p className="text-xs text-amber-900 flex-1 min-w-[220px]">
+              <AlertTriangle className="w-3.5 h-3.5 inline -mt-0.5 mr-1" />
+              Hay {discrepancias} producto{discrepancias === 1 ? "" : "s"} ya contado{discrepancias === 1 ? "" : "s"} con diferencia. ¿Qué quieres rellenar?
+            </p>
+            {pendientes > 0 && (
+              <button onClick={() => autofill({ all: true, only_pending: true }, "pending", `Rellenados los ${pendientes} productos pendientes`)}
+                data-testid="stocktake-autofill-pending" className="text-xs font-bold px-3 py-1.5 rounded-lg bg-slate-900 text-white hover:bg-slate-700">
+                Solo lo pendiente ({pendientes})
+              </button>
+            )}
+            <button onClick={() => autofill({ all: true }, "all", "Todo el stock rellenado con el esperado del sistema")}
+              data-testid="stocktake-autofill-overwrite" className="text-xs font-bold px-3 py-1.5 rounded-lg bg-white border border-amber-300 text-amber-800 hover:border-amber-500">
+              Todo, también lo contado
+            </button>
+            <button onClick={() => setConfirmAll(false)} className="text-xs font-bold px-3 py-1.5 rounded-lg text-slate-500 hover:text-slate-800">
+              Cancelar
+            </button>
+          </div>
+        )}
       </div>
 
       <div className="flex gap-2 flex-wrap items-center">
@@ -252,7 +294,10 @@ function StocktakeGrid({ stocktake, onUpdated, onNext, nextLabel }) {
                     <div className="flex items-start justify-between gap-2">
                       <div className="min-w-0">
                         <p className="text-sm font-bold text-slate-900 leading-tight truncate">{l.name}</p>
-                        <p className="text-[11px] text-slate-400 font-mono-num mt-0.5">esperado: {fmtQty(l.expected)}{l.unit}</p>
+                        <p className="text-[11px] text-slate-400 font-mono-num mt-0.5">
+                          {l.subcategory_label && <span className="font-sans font-bold text-amber-700">{l.subcategory_label} · </span>}
+                          esperado: {fmtQty(l.expected)}{l.unit}
+                        </p>
                       </div>
                       <button
                         onClick={() => autofill({ product_id: l.product_id }, `prod-${l.product_id}`)}
@@ -268,7 +313,7 @@ function StocktakeGrid({ stocktake, onUpdated, onNext, nextLabel }) {
                     </div>
                     <div className="flex items-center gap-1.5">
                       <input
-                        type="number" min="0" step="any" value={raw}
+                        type="number" min="0" step={l.unit === "ud" ? 1 : "any"} value={raw}
                         onChange={(e) => setCounts((c) => ({ ...c, [l.product_id]: e.target.value }))}
                         onBlur={() => saveLine(l)}
                         placeholder="contar…"
@@ -443,6 +488,17 @@ function ReportDialog({ sessionId, open, onClose }) {
                   <p key={v.id} className="text-xs text-slate-600 flex justify-between">
                     <span>{v.ticket_number} · {v.socio_name}</span>
                     <span className="font-mono-num font-bold">{fmtEUR(v.total)}</span>
+                  </p>
+                ))}
+              </div>
+            )}
+            {report.out_of_shift_recharges?.length > 0 && (
+              <div className="bg-sky-50 border border-sky-200 rounded-xl p-3.5" data-testid="report-out-of-shift-recharges">
+                <p className="font-bold text-slate-900 mb-1">Recargas fuera de turno incorporadas ({report.out_of_shift_recharges.length})</p>
+                {report.out_of_shift_recharges.map((r) => (
+                  <p key={r.id} className="text-xs text-slate-600 flex justify-between">
+                    <span>{fmtDateTime(r.created_at)} · {r.socio_name}</span>
+                    <span className="font-mono-num font-bold">{fmtEUR(r.amount)}</span>
                   </p>
                 ))}
               </div>
@@ -638,8 +694,17 @@ export default function Caja() {
             <div className="max-w-md mx-auto mt-4 bg-sky-50 border border-sky-200 rounded-xl px-4 py-3 text-sm text-sky-800 flex items-center gap-3 text-left" data-testid="pending-out-of-shift-banner">
               <Hourglass className="w-5 h-5 shrink-0 text-sky-500" />
               <p>
-                Hay <b>{pendingOut.count} ventas fuera de turno</b> por <b className="font-mono-num">{fmtEUR(pendingOut.total)}</b>.
+                Hay <b>{pendingOut.count} {pendingOut.count === 1 ? "venta" : "ventas"} fuera de turno</b> por <b className="font-mono-num">{fmtEUR(pendingOut.total)}</b>.
                 Se incorporarán obligatoriamente a este turno al abrirlo y su stock se descontará antes del recuento.
+              </p>
+            </div>
+          )}
+          {(pendingOut.recharges_count || 0) > 0 && (
+            <div className="max-w-md mx-auto mt-4 bg-sky-50 border border-sky-200 rounded-xl px-4 py-3 text-sm text-sky-800 flex items-center gap-3 text-left" data-testid="pending-out-of-shift-recharges-banner">
+              <Hourglass className="w-5 h-5 shrink-0 text-sky-500" />
+              <p>
+                Hay <b>{pendingOut.recharges_count} {pendingOut.recharges_count === 1 ? "recarga" : "recargas"} fuera de turno</b> por <b className="font-mono-num">{fmtEUR(pendingOut.recharges_total)}</b> en efectivo.
+                Ese efectivo se sumará al esperado de este turno: <b>no lo incluyas en el fondo inicial</b>.
               </p>
             </div>
           )}
@@ -660,6 +725,11 @@ export default function Caja() {
                 <ClipboardCheck className="w-4 h-4 text-amber-500" /> Apertura en curso · turno de {session.opened_by}
               </p>
               <p className="text-xs text-slate-500 mt-0.5">La caja queda reservada: ventas y recargas en pausa hasta confirmar la apertura.</p>
+              {(session.out_of_shift_recharge_count || 0) > 0 && (
+                <p className="text-xs text-sky-700 font-semibold mt-1" data-testid="opening-absorbed-recharges-note">
+                  {session.out_of_shift_recharge_count} {session.out_of_shift_recharge_count === 1 ? "recarga" : "recargas"} fuera de turno incorporadas ({fmtEUR(session.out_of_shift_recharge_total || 0)}); su efectivo ya cuenta en el esperado de este turno.
+                </p>
+              )}
               {(session.out_of_shift_count || 0) > 0 && (
                 <p className="text-xs text-sky-700 font-semibold mt-1" data-testid="opening-absorbed-note">
                   {session.out_of_shift_count} ventas fuera de turno incorporadas ({fmtEUR(session.out_of_shift_total || 0)}); su stock ya está descontado en el esperado.
@@ -728,6 +798,11 @@ export default function Caja() {
             {(session.out_of_shift_count || 0) > 0 && (
               <span className="badge-inactive" data-testid="session-out-of-shift-note">
                 incluye {session.out_of_shift_count} ventas fuera de turno ({fmtEUR(session.out_of_shift_total || 0)})
+              </span>
+            )}
+            {(session.out_of_shift_recharge_count || 0) > 0 && (
+              <span className="badge-inactive" data-testid="session-out-of-shift-recharges-note">
+                incluye {session.out_of_shift_recharge_count} {session.out_of_shift_recharge_count === 1 ? "recarga" : "recargas"} fuera de turno ({fmtEUR(session.out_of_shift_recharge_total || 0)})
               </span>
             )}
           </div>

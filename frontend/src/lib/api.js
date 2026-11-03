@@ -1,8 +1,10 @@
 import axios from "axios";
 
 const api = axios.create({
-  baseURL: `${process.env.REACT_APP_BACKEND_URL}/api`,
+  baseURL: `${process.env.REACT_APP_BACKEND_URL || ""}/api`, // vacío = la API está en la misma web (Dockerfile)
   withCredentials: true,
+  // Cabecera anti-CSRF: el backend rechaza cualquier petición que modifique datos sin ella.
+  headers: { "X-Requested-With": "XMLHttpRequest" },
 });
 
 export function apiError(e, fallback = "Algo salió mal. Inténtalo de nuevo.") {
@@ -46,14 +48,40 @@ export const catStyle = (cats, key) =>
 
 export const fmtQty = (n) => Math.round((n ?? 0) * 1000) / 1000;
 
+// ----- Subcategorías -----
+// Una categoría con "parent" es subcategoría de la que tiene esa clave (un solo nivel).
+// El backend devuelve /categories ya ordenadas (flor/marihuana → hash → extracto → dry → polen → resto,
+// cada madre seguida de sus subcategorías): las pantallas respetan ese orden.
+export const topCategories = (cats) => cats.filter((c) => !c.parent || !cats.some((p) => p.key === c.parent));
+export const subcategoriesOf = (cats, key) => cats.filter((c) => c.parent === key);
+export const parentOf = (cats, key) => cats.find((c) => c.key === key)?.parent || null;
+
+// ¿Entra un producto en el filtro? Elegir una categoría madre incluye sus subcategorías.
+export const inCategory = (cats, productCategory, key) =>
+  !key || productCategory === key || parentOf(cats, productCategory) === key;
+
+// "Flores › Índica" para subcategorías, el nombre a secas para el resto.
+export const catPath = (cats, key) => {
+  const c = cats.find((x) => x.key === key);
+  if (!c) return key;
+  const p = c.parent && cats.find((x) => x.key === c.parent);
+  return p ? `${p.label} › ${c.label}` : c.label;
+};
+
+// Ordena productos como las categorías (y por nombre dentro de cada una).
+export const byCategoryOrder = (cats) => {
+  const pos = Object.fromEntries(cats.map((c, i) => [c.key, i]));
+  return (a, b) => (pos[a.category] ?? 1e9) - (pos[b.category] ?? 1e9) || a.name.localeCompare(b.name, "es");
+};
+
 export async function uploadPhoto(file) {
   const fd = new FormData();
   fd.append("file", file);
   const res = await api.post("/upload", fd, { headers: { "Content-Type": "multipart/form-data" } });
-  return `${process.env.REACT_APP_BACKEND_URL}/api/files/${res.data.path}`;
+  return `${BACKEND}/api/files/${res.data.path}`;
 }
 
-export const BACKEND = process.env.REACT_APP_BACKEND_URL;
+export const BACKEND = process.env.REACT_APP_BACKEND_URL || "";
 
 // Enlace directo al PDF del cierre: es una descarga normal del navegador (con la sesión por cookie).
 // Si algo falla, el motivo se ve en la pestaña que se abre.

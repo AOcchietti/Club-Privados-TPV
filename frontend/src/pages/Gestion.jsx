@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
-import api, { fmtEUR, apiError, catLabel, catStyle, CATEGORY_DOTS, uploadPhoto, fmtQty } from "@/lib/api";
+import api, { fmtEUR, apiError, catLabel, catStyle, catPath, CATEGORY_DOTS, uploadPhoto, fmtQty, topCategories, subcategoriesOf, inCategory } from "@/lib/api";
+import CategoryFilter from "@/components/CategoryFilter";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from "@/components/ui/alert-dialog";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
@@ -84,7 +85,7 @@ function ProductDialog({ open, onClose, product, categories, onSaved }) {
           <div>
             <label className="text-xs font-semibold uppercase tracking-wider text-slate-500 block mb-1">Categoría</label>
             <select value={form.category} onChange={set("category")} data-testid="product-category-select" className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 bg-white focus:outline-none focus:ring-2 focus:ring-amber-400">
-              {categories.map((c) => <option key={c.key} value={c.key}>{c.label}</option>)}
+              {categories.map((c) => <option key={c.key} value={c.key}>{catPath(categories, c.key)}</option>)}
             </select>
           </div>
           <div>
@@ -110,7 +111,7 @@ function ProductDialog({ open, onClose, product, categories, onSaved }) {
           ) : (
             <div>
               <label className="text-xs font-semibold uppercase tracking-wider text-slate-500 block mb-1">Stock inicial ({form.unit})</label>
-              <input type="number" step="0.5" min="0" value={form.stock} onChange={set("stock")} data-testid="product-stock-input" className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 focus:outline-none focus:ring-2 focus:ring-amber-400" />
+              <input type="number" step={form.unit === "ud" ? 1 : 0.5} min="0" value={form.stock} onChange={set("stock")} data-testid="product-stock-input" className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 focus:outline-none focus:ring-2 focus:ring-amber-400" />
             </div>
           )}
           <div>
@@ -149,27 +150,42 @@ function ProductDialog({ open, onClose, product, categories, onSaved }) {
   );
 }
 
-function CategoryDialog({ open, onClose, category, onSaved }) {
+function CategoryDialog({ open, onClose, category, categories, onSaved }) {
   const [label, setLabel] = useState("");
   const [color, setColor] = useState("emerald");
+  const [isSub, setIsSub] = useState(false);
+  const [parent, setParent] = useState("");
   const [saving, setSaving] = useState(false);
+
+  // Solo un nivel: la madre tiene que ser una categoría normal, y una categoría con subcategorías no puede ir dentro de otra.
+  const parentOptions = topCategories(categories).filter((c) => c.key !== category?.key);
+  const hasChildren = !!category && subcategoriesOf(categories, category.key).length > 0;
+  const noun = isSub ? "subcategoría" : "categoría";
 
   useEffect(() => {
     if (open) {
       setLabel(category?.label || "");
       setColor(category?.color || "emerald");
+      setIsSub(!!category?.parent);
+      setParent(category?.parent || "");
     }
   }, [open, category]);
 
+  const toggleSub = (checked) => {
+    setIsSub(checked);
+    if (checked && !parentOptions.some((c) => c.key === parent)) setParent(parentOptions[0]?.key || "");
+  };
+
   const save = async () => {
     setSaving(true);
+    const payload = { label, color, parent: isSub ? parent : null };
     try {
       if (category) {
-        await api.patch(`/categories/${category.id}`, { label, color });
-        toast.success("Categoría actualizada");
+        await api.patch(`/categories/${category.id}`, payload);
+        toast.success(isSub ? "Subcategoría actualizada" : "Categoría actualizada");
       } else {
-        await api.post("/categories", { label, color });
-        toast.success("Categoría creada");
+        await api.post("/categories", payload);
+        toast.success(isSub ? "Subcategoría creada" : "Categoría creada");
       }
       onSaved();
       onClose();
@@ -184,10 +200,30 @@ function CategoryDialog({ open, onClose, category, onSaved }) {
     <Dialog open={open} onOpenChange={onClose}>
       <DialogContent className="max-w-xs" data-testid="category-dialog">
         <DialogHeader>
-          <DialogTitle className="font-display">{category ? "Editar categoría" : "Nueva categoría"}</DialogTitle>
+          <DialogTitle className="font-display">{category ? `Editar ${noun}` : `Nueva ${noun}`}</DialogTitle>
         </DialogHeader>
         <label className="text-xs font-semibold uppercase tracking-wider text-slate-500">Nombre</label>
         <input value={label} onChange={(e) => setLabel(e.target.value)} data-testid="category-name-input" className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 focus:outline-none focus:ring-2 focus:ring-amber-400" />
+        <label className={`flex items-start gap-2.5 p-3 rounded-xl border transition-colors ${
+          isSub ? "border-amber-300 bg-amber-50/70" : "border-slate-200 bg-white"} ${hasChildren || !parentOptions.length ? "opacity-60" : "cursor-pointer hover:border-amber-300"}`}>
+          <input type="checkbox" checked={isSub} disabled={hasChildren || !parentOptions.length} onChange={(e) => toggleSub(e.target.checked)}
+            data-testid="category-is-sub-checkbox" className="mt-0.5 w-4 h-4 accent-amber-500 shrink-0" />
+          <span>
+            <span className="block text-sm font-semibold text-slate-800">Es una subcategoría</span>
+            <span className="block text-[11px] text-slate-500 leading-snug">
+              {hasChildren ? "Ya tiene subcategorías propias, así que no puede ir dentro de otra." : "Opcional. En el TPV aparecerá al elegir su categoría."}
+            </span>
+          </span>
+        </label>
+        {isSub && (
+          <>
+            <label className="text-xs font-semibold uppercase tracking-wider text-slate-500">Dentro de</label>
+            <select value={parent} onChange={(e) => setParent(e.target.value)} data-testid="category-parent-select"
+              className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 bg-white focus:outline-none focus:ring-2 focus:ring-amber-400">
+              {parentOptions.map((c) => <option key={c.key} value={c.key}>{c.label}</option>)}
+            </select>
+          </>
+        )}
         <label className="text-xs font-semibold uppercase tracking-wider text-slate-500">Color</label>
         <div className="flex gap-2 flex-wrap" data-testid="category-color-picker">
           {Object.keys(CATEGORY_DOTS).map((c) => (
@@ -199,8 +235,8 @@ function CategoryDialog({ open, onClose, category, onSaved }) {
             />
           ))}
         </div>
-        <button onClick={save} disabled={saving || !label.trim()} className="btn-primary w-full" data-testid="category-save-button">
-          {saving ? "Guardando…" : category ? "Guardar cambios" : "Crear categoría"}
+        <button onClick={save} disabled={saving || !label.trim() || (isSub && !parent)} className="btn-primary w-full" data-testid="category-save-button">
+          {saving ? "Guardando…" : category ? "Guardar cambios" : `Crear ${noun}`}
         </button>
       </DialogContent>
     </Dialog>
@@ -262,7 +298,7 @@ function StockDialog({ product, open, onClose, onSaved }) {
         <label className="text-xs font-semibold uppercase tracking-wider text-slate-500">
           {type === "entrada" ? `Cantidad que entra (${product.unit})` : type === "merma" ? `Cantidad que sale (${product.unit})` : `Stock real contado (${product.unit})`}
         </label>
-        <input type="number" min="0" step="any" value={qty} onChange={(e) => setQty(e.target.value)} data-testid="stock-qty-input"
+        <input type="number" min="0" step={product.unit === "ud" ? 1 : "any"} value={qty} onChange={(e) => setQty(e.target.value)} data-testid="stock-qty-input"
           className="w-full px-4 py-3 rounded-xl border border-slate-300 font-mono-num font-bold text-center focus:outline-none focus:ring-2 focus:ring-amber-400" />
         <label className="text-xs font-semibold uppercase tracking-wider text-slate-500">
           {type === "entrada" ? "Motivo (opcional)" : "Motivo (obligatorio)"}
@@ -333,9 +369,47 @@ export default function Gestion() {
   };
 
   const filtered = products
-    .filter((p) => (!cat || p.category === cat) && (!q || p.name.toLowerCase().includes(q.toLowerCase())))
+    .filter((p) => inCategory(categories, p.category, cat) && (!q || p.name.toLowerCase().includes(q.toLowerCase())))
     .sort((a, b) => (a.active === b.active ? 0 : a.active ? -1 : 1));
   const productCount = (key) => products.filter((p) => p.category === key).length;
+
+  const categoryRow = (c, sub = false) => {
+    const subCount = sub ? 0 : subcategoriesOf(categories, c.key).length;
+    return (
+      <div className={`flex items-center gap-3 ${sub ? "py-1.5" : ""}`} data-testid={`category-card-${c.id}`}>
+        <span className={`${sub ? "w-3 h-3 ml-0.5" : "w-4 h-4"} rounded-full shrink-0 ${CATEGORY_DOTS[c.color] || "bg-slate-300"}`} />
+        <div className="flex-1 min-w-0">
+          <p className={`${sub ? "text-sm font-medium" : "font-semibold"} text-slate-900 truncate`}>{c.label}</p>
+          <p className="text-xs text-slate-400">
+            {productCount(c.key)} producto{productCount(c.key) === 1 ? "" : "s"}{subCount ? ` · ${subCount} subcategoría${subCount === 1 ? "" : "s"}` : ""}
+          </p>
+        </div>
+        <button onClick={() => { setEditingCat(c); setCatDialogOpen(true); }} title="Editar" data-testid={`category-edit-${c.id}`}
+          className="p-2 rounded-lg text-slate-400 hover:text-amber-600 hover:bg-amber-50 transition-colors">
+          <Pencil className="w-4 h-4" />
+        </button>
+        <AlertDialog>
+          <AlertDialogTrigger asChild>
+            <button title="Eliminar" data-testid={`category-delete-${c.id}`} className="p-2 rounded-lg text-slate-400 hover:text-red-500 hover:bg-red-50 transition-colors">
+              <Trash2 className="w-4 h-4" />
+            </button>
+          </AlertDialogTrigger>
+          <AlertDialogContent>
+            <AlertDialogHeader>
+              <AlertDialogTitle>¿Eliminar la {sub ? "subcategoría" : "categoría"} «{c.label}»?</AlertDialogTitle>
+              <AlertDialogDescription>
+                Solo se puede eliminar si ningún producto la está usando{sub ? "" : " y no tiene subcategorías"}.
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <AlertDialogCancel>Cancelar</AlertDialogCancel>
+              <AlertDialogAction onClick={() => removeCat(c)} className="bg-red-500 hover:bg-red-600" data-testid="category-delete-confirm">Eliminar</AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
+      </div>
+    );
+  };
 
   return (
     <div className="space-y-5" data-testid="gestion-page">
@@ -379,20 +453,7 @@ export default function Gestion() {
             </div>
           </div>
 
-          <div className="flex gap-2 flex-wrap" data-testid="gestion-category-filters">
-            {[{ key: null, label: "Todas" }, ...categories].map((c) => (
-              <button
-                key={c.label}
-                onClick={() => setCat(c.key)}
-                data-testid={`gestion-filter-${c.key || "todas"}`}
-                className={`px-3.5 py-2 rounded-full text-xs font-bold border transition-colors ${
-                  cat === c.key ? "bg-slate-900 text-white border-slate-900" : "bg-white text-slate-600 border-slate-200 hover:border-slate-400"
-                }`}
-              >
-                {c.label}
-              </button>
-            ))}
-          </div>
+          <CategoryFilter categories={categories} value={cat} onChange={setCat} allLabel="Todas" testid="gestion" />
 
           {view === "grid" ? (
           <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4" data-testid="gestion-products-grid">
@@ -502,7 +563,7 @@ export default function Gestion() {
                       </td>
                       <td className="px-4 py-3">
                         <span className={`text-xs font-medium px-2.5 py-0.5 rounded-full border ${catStyle(categories, p.category)}`}>
-                          {catLabel(categories, p.category)}
+                          {catPath(categories, p.category)}
                         </span>
                       </td>
                       <td className="px-4 py-3 text-right font-mono-num font-bold text-slate-900">{fmtEUR(p.price)}/{p.unit}</td>
@@ -558,43 +619,26 @@ export default function Gestion() {
         </TabsContent>
 
         <TabsContent value="categorias" className="mt-4">
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3" data-testid="categories-grid">
-            {categories.map((c) => (
-              <div key={c.id} className="card-soft p-4 flex items-center gap-3" data-testid={`category-card-${c.id}`}>
-                <span className={`w-4 h-4 rounded-full shrink-0 ${CATEGORY_DOTS[c.color] || "bg-slate-300"}`} />
-                <div className="flex-1 min-w-0">
-                  <p className="font-semibold text-slate-900">{c.label}</p>
-                  <p className="text-xs text-slate-400">{productCount(c.key)} productos · {c.key}</p>
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 items-start" data-testid="categories-grid">
+            {topCategories(categories).map((c) => {
+              const subs = subcategoriesOf(categories, c.key);
+              return (
+                <div key={c.id} className="card-soft p-4">
+                  {categoryRow(c)}
+                  {subs.length > 0 && (
+                    <div className="mt-3 pt-2 pl-3 border-t border-slate-100 border-l-2 border-l-amber-200" data-testid={`category-subs-${c.id}`}>
+                      {subs.map((s) => <div key={s.id}>{categoryRow(s, true)}</div>)}
+                    </div>
+                  )}
                 </div>
-                <button onClick={() => { setEditingCat(c); setCatDialogOpen(true); }} title="Editar" data-testid={`category-edit-${c.id}`}
-                  className="p-2 rounded-lg text-slate-400 hover:text-amber-600 hover:bg-amber-50 transition-colors">
-                  <Pencil className="w-4 h-4" />
-                </button>
-                <AlertDialog>
-                  <AlertDialogTrigger asChild>
-                    <button title="Eliminar" data-testid={`category-delete-${c.id}`} className="p-2 rounded-lg text-slate-400 hover:text-red-500 hover:bg-red-50 transition-colors">
-                      <Trash2 className="w-4 h-4" />
-                    </button>
-                  </AlertDialogTrigger>
-                  <AlertDialogContent>
-                    <AlertDialogHeader>
-                      <AlertDialogTitle>¿Eliminar la categoría «{c.label}»?</AlertDialogTitle>
-                      <AlertDialogDescription>Solo se puede eliminar si ningún producto la está usando.</AlertDialogDescription>
-                    </AlertDialogHeader>
-                    <AlertDialogFooter>
-                      <AlertDialogCancel>Cancelar</AlertDialogCancel>
-                      <AlertDialogAction onClick={() => removeCat(c)} className="bg-red-500 hover:bg-red-600" data-testid="category-delete-confirm">Eliminar</AlertDialogAction>
-                    </AlertDialogFooter>
-                  </AlertDialogContent>
-                </AlertDialog>
-              </div>
-            ))}
+              );
+            })}
           </div>
         </TabsContent>
       </Tabs>
 
       <ProductDialog open={dialogOpen} onClose={() => setDialogOpen(false)} product={editing} categories={categories} onSaved={load} />
-      <CategoryDialog open={catDialogOpen} onClose={() => setCatDialogOpen(false)} category={editingCat} onSaved={load} />
+      <CategoryDialog open={catDialogOpen} onClose={() => setCatDialogOpen(false)} category={editingCat} categories={categories} onSaved={load} />
       <StockDialog product={stockFor} open={!!stockFor} onClose={() => setStockFor(null)} onSaved={load} />
     </div>
   );

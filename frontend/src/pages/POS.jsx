@@ -2,11 +2,15 @@ import { useEffect, useMemo, useState } from "react";
 import { useSearchParams, Link } from "react-router-dom";
 import { motion, AnimatePresence } from "framer-motion";
 import { toast } from "sonner";
-import api, { fmtEUR, apiError, catLabel, catStyle } from "@/lib/api";
+import api, { fmtEUR, apiError, catLabel, catStyle, inCategory, byCategoryOrder } from "@/lib/api";
+import CategoryFilter from "@/components/CategoryFilter";
 import { useAuth } from "@/context/AuthContext";
 import TicketDialog from "@/components/TicketDialog";
 import RechargeDialog from "@/components/RechargeDialog";
 import { Search, ShoppingCart, Trash2, Plus, Minus, UserRound, Wallet, X, Loader2, Coins, Hourglass, Package } from "lucide-react";
+
+// Stock que de verdad se puede vender: el backend descuenta lo ya vendido fuera de turno.
+const available = (p) => (p.available ?? p.stock ?? 0);
 
 export default function POS() {
   const { user } = useAuth();
@@ -54,12 +58,15 @@ export default function POS() {
 
   const filtered = useMemo(
     () =>
-      products.filter(
-        (p) =>
-          (!cat || p.category === cat) &&
-          (!q || p.name.toLowerCase().includes(q.toLowerCase()))
-      ),
-    [products, q, cat]
+      products
+        .filter(
+          (p) =>
+            available(p) > 0 && // sin stock: se oculta del TPV automáticamente
+            inCategory(categories, p.category, cat) && // una categoría madre incluye sus subcategorías
+            (!q || p.name.toLowerCase().includes(q.toLowerCase()))
+        )
+        .sort(byCategoryOrder(categories)), // flores → hash → extractos → dry → polen → resto, como el recuento
+    [products, categories, q, cat]
   );
 
   const filteredSocios = useMemo(
@@ -79,19 +86,24 @@ export default function POS() {
   const total = cartItems.reduce((acc, i) => acc + i.product.price * i.qty, 0);
 
   const addToCart = (p) => {
-    if (p.stock <= (cart[p.id] || 0)) {
+    if (available(p) <= (cart[p.id] || 0)) {
       toast.warning(`Sin más stock de «${p.name}»`);
       return;
     }
     setCart((c) => ({ ...c, [p.id]: (c[p.id] || 0) + 1 }));
   };
 
-  const changeQty = (id, delta) => {
+  const changeQty = (p, delta) => {
+    const current = cart[p.id] || 0;
+    if (delta > 0 && current >= available(p) - 1e-9) {
+      toast.warning(`Sin más stock de «${p.name}»`);
+      return;
+    }
     setCart((c) => {
       const next = { ...c };
-      const val = (next[id] || 0) + delta;
-      if (val <= 0) delete next[id];
-      else next[id] = Math.round(val * 1000) / 1000;
+      const val = Math.min((next[p.id] || 0) + delta, available(p));
+      if (val <= 1e-9) delete next[p.id];
+      else next[p.id] = Math.round(val * 1000) / 1000;
       return next;
     });
   };
@@ -102,11 +114,12 @@ export default function POS() {
     if (raw === "" || isNaN(parseFloat(raw))) return;
     const val = parseFloat(raw);
     if (val < 0) return;
-    const grams = mode === "cr" ? val / p.price : val;
+    let grams = mode === "cr" ? val / p.price : val;
+    if (p.unit === "ud") grams = Math.floor(grams + 1e-9); // por unidades: solo enteros
     if (grams <= 0) return;
-    if (grams > p.stock) {
-      toast.warning(`Stock máximo de «${p.name}»: ${p.stock}${p.unit}`);
-      setCart((c) => ({ ...c, [p.id]: p.stock }));
+    if (grams > available(p)) {
+      toast.warning(`Stock máximo de «${p.name}»: ${available(p)}${p.unit}`);
+      setCart((c) => ({ ...c, [p.id]: p.unit === "ud" ? Math.floor(available(p)) : available(p) }));
       return;
     }
     setCart((c) => ({ ...c, [p.id]: Math.round(grams * 1000) / 1000 }));
@@ -187,35 +200,19 @@ export default function POS() {
               className="w-full pl-10 pr-4 py-3 rounded-xl border border-slate-300 bg-white focus:outline-none focus:ring-2 focus:ring-amber-400"
             />
           </div>
-          <div className="flex gap-2 flex-wrap" data-testid="pos-category-filters">
-            {[{ key: null, label: "Todo" }, ...categories].map((c) => (
-              <button
-                key={c.label}
-                onClick={() => setCat(c.key)}
-                data-testid={`pos-filter-${c.key || "todo"}`}
-                className={`px-3.5 py-2 rounded-full text-xs font-bold transition-colors border ${
-                  cat === c.key
-                    ? "bg-slate-900 text-white border-slate-900"
-                    : "bg-white text-slate-600 border-slate-200 hover:border-slate-400"
-                }`}
-              >
-                {c.label}
-              </button>
-            ))}
-          </div>
+          <CategoryFilter categories={categories} value={cat} onChange={setCat} allLabel="Todo" testid="pos" />
 
           <div className="grid grid-cols-[repeat(auto-fill,minmax(150px,1fr))] gap-3" data-testid="pos-products-grid">
             {filtered.map((p) => {
-              const out = p.stock <= 0;
               return (
                 <motion.div
                   key={p.id}
                   layout
                   whileTap={{ scale: 0.98 }}
-                  onClick={() => !out && addToCart(p)}
+                  onClick={() => addToCart(p)}
                   role="button"
                   data-testid={`pos-product-card-${p.id}`}
-                  className={`pos-card p-0 aspect-square justify-start overflow-hidden ${out ? "opacity-45 cursor-not-allowed" : "hover:-translate-y-0.5"}`}
+                  className="pos-card p-0 aspect-square justify-start overflow-hidden hover:-translate-y-0.5"
                 >
                   <div className="relative flex-1 min-h-0 bg-gradient-to-br from-amber-50 to-emerald-50">
                     {p.image_url ? (
@@ -228,7 +225,6 @@ export default function POS() {
                     <span className={`absolute top-2 left-2 text-[10px] font-bold px-2 py-0.5 rounded-full border ${catStyle(categories, p.category)}`}>
                       {catLabel(categories, p.category)}
                     </span>
-                    {out && <span className="absolute top-2 right-2 badge-inactive">Agotado</span>}
                   </div>
                   <div className="px-2.5 pt-2 pb-2.5 shrink-0">
                     <p className="font-display font-bold text-sm text-slate-900 leading-tight line-clamp-2 min-h-[2.5em]">{p.name}</p>
@@ -243,7 +239,7 @@ export default function POS() {
               );
             })}
             {filtered.length === 0 && (
-              <p className="col-span-full text-sm text-slate-400 py-10 text-center">Ningún producto coincide con la búsqueda.</p>
+              <p className="col-span-full text-sm text-slate-400 py-10 text-center">Ningún producto disponible con esta búsqueda. Los productos sin stock no aparecen en el TPV.</p>
             )}
           </div>
         </div>
@@ -347,14 +343,14 @@ export default function POS() {
                         </button>
                       ))}
                       <div className="flex items-center gap-1 ml-auto">
-                        <button onClick={() => changeQty(p.id, -step)} className="w-7 h-7 rounded-lg bg-white border border-slate-200 flex items-center justify-center hover:bg-slate-50" data-testid={`cart-minus-${p.id}`}>
+                        <button onClick={() => changeQty(p, -step)} className="w-7 h-7 rounded-lg bg-white border border-slate-200 flex items-center justify-center hover:bg-slate-50" data-testid={`cart-minus-${p.id}`}>
                           <Minus className="w-3.5 h-3.5" />
                         </button>
                         <div className="relative">
                           <input
                             type="number"
                             min="0"
-                            step="any"
+                            step={p.unit === "ud" ? 1 : "any"}
                             value={qtyDraft[p.id] !== undefined ? qtyDraft[p.id] : (mode === "cr" ? credits : qty)}
                             onFocus={() => setQtyDraft((d) => ({ ...d, [p.id]: String(mode === "cr" ? credits : qty) }))}
                             onChange={(e) => {
@@ -369,7 +365,7 @@ export default function POS() {
                             {mode === "cr" ? "Cr" : p.unit}
                           </span>
                         </div>
-                        <button onClick={() => changeQty(p.id, step)} className="w-7 h-7 rounded-lg bg-white border border-slate-200 flex items-center justify-center hover:bg-slate-50" data-testid={`cart-plus-${p.id}`}>
+                        <button onClick={() => changeQty(p, step)} className="w-7 h-7 rounded-lg bg-white border border-slate-200 flex items-center justify-center hover:bg-slate-50" data-testid={`cart-plus-${p.id}`}>
                           <Plus className="w-3.5 h-3.5" />
                         </button>
                       </div>

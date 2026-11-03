@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
-import api, { fmtEUR, catLabel } from "@/lib/api";
+import api, { fmtEUR, catLabel, inCategory, byCategoryOrder } from "@/lib/api";
+import CategoryFilter from "@/components/CategoryFilter";
 import { Package, Search, LayoutGrid, List } from "lucide-react";
 
 export default function Productos() {
@@ -16,9 +17,9 @@ export default function Productos() {
   };
   useEffect(() => { load(); }, []);
 
-  const filtered = products.filter(
-    (p) => (!cat || p.category === cat) && (!q || p.name.toLowerCase().includes(q.toLowerCase()))
-  );
+  const filtered = products
+    .filter((p) => inCategory(categories, p.category, cat) && (!q || p.name.toLowerCase().includes(q.toLowerCase())))
+    .sort(byCategoryOrder(categories));
 
   return (
     <div className="space-y-5" data-testid="productos-page">
@@ -45,20 +46,7 @@ export default function Productos() {
         </div>
       </div>
 
-      <div className="flex gap-2 flex-wrap" data-testid="products-category-filters">
-        {[{ key: null, label: "Todas" }, ...categories].map((c) => (
-          <button
-            key={c.label}
-            onClick={() => setCat(c.key)}
-            data-testid={`products-filter-${c.key || "todas"}`}
-            className={`px-3.5 py-2 rounded-full text-xs font-bold border transition-colors ${
-              cat === c.key ? "bg-slate-900 text-white border-slate-900" : "bg-white text-slate-600 border-slate-200 hover:border-slate-400"
-            }`}
-          >
-            {c.label}
-          </button>
-        ))}
-      </div>
+      <CategoryFilter categories={categories} value={cat} onChange={setCat} allLabel="Todas" testid="products" />
 
       {view === "grid" ? (
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4" data-testid="products-grid">

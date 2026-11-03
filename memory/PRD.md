@@ -64,6 +64,40 @@ Frontend copiado tal cual de la preview de Emergent; backend reconstruido a part
 - Gestión: filtros por categoría, inactivos siempre al final y atenuados (sin etiqueta "Activo"); el motivo es opcional en las entradas de stock (sigue siendo obligatorio en mermas y ajustes). El stock sigue visible aquí.
 - PDF con el resumen del cierre (`GET /cash/sessions/{id}/report.pdf`, admin o responsable del turno): turno, arqueo, ventas, productos vendidos, movimientos de caja y diferencias de los recuentos. Se descarga con un enlace directo: aviso con botón al cerrar el turno, icono en cada fila del histórico y botón en el informe del turno. Generado sin dependencias (`backend/cierre_pdf.py`).
 
+## Implementado (31/10/2026, iteración 7 · rama `demo`)
+- Recargas también sin turno abierto: el saldo sube al momento y el efectivo se incorpora al esperado del siguiente turno (como las ventas fuera de turno). Avisos en Caja y en el diálogo de recarga; aparecen en el informe y en el PDF del turno que las incorpora. Durante la apertura y el cierre siguen en pausa.
+- PDF de cierre en una sola página A4 y sin la lista de productos vendidos; si hay muchos movimientos o diferencias, lista los primeros y añade "y N más".
+- El TPV oculta automáticamente los productos sin stock disponible (stock menos lo vendido fuera de turno pendiente, campo `available`).
+- Auditoría de seguridad (tríada CIA) con 18 correcciones: ver `docs/AUDITORIA_SEGURIDAD.md`. Destacan el fallo permanente del login tras 5 intentos, la protección CSRF (cabecera `X-Requested-With` obligatoria), solo imágenes reales en las subidas, la eliminación de la analítica de Emergent con grabación de sesiones, las ventas atómicas, la protección del stock vendido fuera de turno y los datos de ejemplo solo en el primer arranque.
+- Batería de pruebas en `backend/tests` (`python tests/run_all.py`): funcionales, seguridad, invariantes con simulación aleatoria y mutación.
+
+## Implementado (31/10/2026, iteración 8 · rama `demo`)
+- PDF de cierre: en productos por gramos solo salen los descuadres de 1 g o más si el producto cuesta menos de 15 Cr/g, y de 0,5 g o más si cuesta 15 Cr/g o más (15 cuenta como caro). En productos por unidades sale cualquier diferencia. El PDF dice cuántas diferencias pequeñas no muestra y explica el criterio al pie. El recuento guarda el precio de cada producto; los recuentos antiguos usan el precio actual.
+- Catálogo de comida y bebida: categorías "Refrescos" (Coca-Cola, Coca-Cola Zero, Fanta Naranja y Limón, Sprite, Aquarius, Nestea, agua) y "Dulces y snacks" (Kinder Bueno, Bueno White, Country, Delice, Twix, Snickers, KitKat, Chupa Chups), por unidades y con ilustraciones propias sin logotipos (`backend/demo_catalog.py`). Se añaden una sola vez al arrancar, también en bases ya existentes (marca `catalog_food_drinks_v1` en `settings`): lo que se borre o cambie después no se vuelve a crear.
+- Productos por unidades: solo cantidades enteras en ventas, entradas/mermas/ajustes, stock inicial y recuentos (el TPV redondea hacia abajo y el botón + ya no pasa del stock disponible).
+
+## Implementado (31/10/2026, iteración 9 · rama `demo`)
+- Subcategorías opcionales (un solo nivel): en el mismo diálogo de "Nueva categoría" se marca "Es una subcategoría" y se elige "Dentro de". Una subcategoría puede llamarse igual que otra categoría (clave `madre-nombre`). No se puede borrar una categoría con subcategorías ni meter dentro de otra una categoría que ya las tiene. En Gestión cada categoría muestra sus subcategorías dentro de su tarjeta y el selector de producto muestra "Madre › Sub".
+- Filtros con subcategorías en TPV, Productos y Gestión (`components/CategoryFilter.jsx`): al elegir una categoría que las tenga aparece debajo una segunda fila ("Todo X" + subcategorías). Elegir la madre incluye los productos de sus subcategorías (también en `GET /products?category=`).
+- Orden único de categorías y productos (TPV, catálogo, gestión y recuento), calculado en el backend (`ordered_categories`): flor/marihuana → hash/hachís → extracto → dry → polen → resto alfabético; cada madre seguida de sus subcategorías.
+- Recuento: una sección por categoría madre, con la subcategoría indicada en cada producto. Botón "Contado = esperado en todo el stock" en apertura y cierre (`autofill` con `all`); si ya hay productos contados con diferencia, pregunta si rellenar solo lo pendiente (`only_pending`) o todo.
+
+## Implementado (31/10/2026, iteración 10 · rama `demo` · cierre de la auditoría y despliegue)
+- Dependencias: `backend/requirements.txt` limpio (solo lo que usa el código) con mínimos sin vulnerabilidades conocidas (Starlette ≥ 1.0.1, python-multipart ≥ 0.0.31, PyJWT ≥ 2.12, requests ≥ 2.32.4). Frontend: axios ≥ 1.20, react-router ≥ 7.18; fuera zod y @hookform/resolvers (sin usar) y los paquetes de Emergent; react-scripts como devDependency.
+- Compatibilidad con Starlette 1.x (`lifespan` en vez de `on_event`) y con bcrypt 5 (recorte a 72 bytes; contraseñas más largas se rechazan).
+- Cerrar sesión anula en el servidor los tokens de ese dispositivo (`revoked_tokens` con TTL). En producción el servidor no arranca con un `JWT_SECRET` de menos de 32 caracteres.
+- `FILE_STORAGE=mongo`: fotos y PDF dentro de MongoDB (`file_blobs`). El backend sirve el frontend compilado si existe (`frontend/build`): app y API en la misma web. `COOKIE_SAMESITE` configurable.
+- Tipografías alojadas en la app (`@fontsource`), sin Google Fonts.
+- Despliegue: `Dockerfile` (un solo servicio), `render.yaml`, guía `docs/DESPLIEGUE.md`.
+- Arreglado `GET /auth/me` (error 500 desde el código original: al recargar la página se perdía la sesión), detectado por la prueba contra el servidor real.
+- GitHub Actions (`.github/workflows/pruebas.yml`) con MongoDB 8 real: pruebas internas, `tests/e2e_real.py` por HTTP antes y después de reiniciar, imagen Docker en modo producción con contenedor nuevo, navegador real (`tests/ui_smoke.py`), `pip-audit` y `npm audit`.
+
+## Implementado (03/11/2026, iteración 11 · versión 1.0.0)
+- Recuperación de contraseña por email para el equipo: «¿Has olvidado tu contraseña?» en el acceso (`/recuperar`) y página para elegir la nueva (`/restablecer`). Respuesta idéntica exista o no la cuenta, enlace de un solo uso que caduca en 30 minutos (solo se guarda su hash), como mucho 3 correos por hora y cuenta, límite por conexión, enlace construido con `FRONTEND_URL` (nunca con la cabecera Host), aviso por correo del cambio y cierre de todas las sesiones (`pw_version` en los tokens; también cuando un admin cambia la contraseña de otra persona).
+- Envío de correo por la API HTTPS de Brevo (`BREVO_API_KEY`, sirve en el plan gratis de Render, que bloquea SMTP) o por SMTP (`SMTP_*`). Sin configurar, en local el correo sale en la consola.
+- Versión 1.0.0: `CHANGELOG.md`, `APP_VERSION` en `GET /api/`, etiqueta `v1.0.0` y release en GitHub. Render publica `main`.
+- Pruebas: recorrido de recuperación con correos reales en GitHub (Mailpit), también desde el navegador; 4 mutaciones nuevas.
+
 ## Backlog priorizado
 - P0: nada bloqueante pendiente.
 - P1: impresión/exportación de tickets y cierres (PDF/Z-report); límites de dispensación por socio/día (normativa CSC); caducidad de membresía con avisos; vista de socios con deuda (filtro en lista de socios).

@@ -12,7 +12,7 @@ Verify: bcrypt hash starts with `$2b$`; socios have member_number WL-XXXX and no
 ## Step 2: API testing
 ```
 API=$(grep REACT_APP_BACKEND_URL /app/frontend/.env | cut -d '"' -f2 | cut -d '=' -f2)
-curl -c /tmp/cookies.txt -X POST $API/api/auth/login -H "Content-Type: application/json" -d '{"email":"admin@weedlemon.es","password":"admin123"}'
+curl -c /tmp/cookies.txt -X POST $API/api/auth/login -H "Content-Type: application/json" -H "X-Requested-With: XMLHttpRequest" -d '{"email":"admin@weedlemon.es","password":"admin123"}'
 curl -b /tmp/cookies.txt $API/api/auth/me
 curl -b /tmp/cookies.txt $API/api/products
 ```

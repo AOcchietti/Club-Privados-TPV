@@ -1,0 +1,215 @@
+# Pruebas en servidores de GitHub con paquetes y MongoDB reales, en cada push a main, demo o V02.
+# Los resultados se ven en la pestaña "Actions" del repositorio y junto a cada commit (✔ / ✘).
+name: Pruebas
+
+on:
+  push:
+    branches: [main, demo, V02]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  backend:
+    name: Backend con MongoDB real
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    env:
+      MONGO_URL: mongodb://localhost:27017
+      DB_NAME: tpv_e2e
+      JWT_SECRET: clave-de-pruebas-de-github-actions-suficientemente-larga-123
+      COOKIE_SECURE: "false"
+      FRONTEND_URL: http://localhost:3000
+      ADMIN_EMAIL: admin@weedlemon.es
+      ADMIN_PASSWORD: admin123
+      # Correo: Mailpit recoge los emails (recuperación de contraseña) para que la prueba los lea
+      SMTP_HOST: localhost
+      SMTP_PORT: "1025"
+      SMTP_SECURITY: none
+      EMAIL_FROM: tpv@weedlemon.test
+      MAILPIT_URL: http://localhost:8025
+      E2E_LINK_BASE: http://localhost:3000
+    steps:
+      - uses: actions/checkout@v5
+      - name: MongoDB 8 (la misma versión que el plan gratis de Atlas)
+        # Los runners de GitHub usan Linux 6.19+, incompatible con el TCMalloc de MongoDB 8 (SERVER-121912).
+        # Solución conocida: dejar que glibc gestione rseq. Si aun así no arranca, se prueba MongoDB 7.
+        run: |
+          arrancar() {
+            docker rm -f mongo > /dev/null 2>&1 || true
+            docker run -d --name mongo -p 27017:27017 -e GLIBC_TUNABLES=glibc.pthread.rseq=1 "$1" > /dev/null
+            for i in $(seq 45); do docker exec mongo mongosh --quiet --eval 'db.runCommand({ping:1}).ok' 2>/dev/null | grep -q 1 && return 0; sleep 2; done
+            return 1
+          }
+          if arrancar mongo:8; then imagen=mongo:8
+          elif arrancar mongo:7; then imagen=mongo:7
+          else
+            docker logs mongo 2>&1 | tail -40
+            echo "::error title=MongoDB no arranca::$(docker logs mongo 2>&1 | tail -6 | tr '\n' ' ' | cut -c1-800)"
+            exit 1
+          fi
+          echo "::notice title=MongoDB::$imagen, versión $(docker exec mongo mongosh --quiet --eval 'db.version()')"
+      - name: Servidor de correo de pruebas (Mailpit)
+        run: |
+          docker run -d --name mailpit -p 1025:1025 -p 8025:8025 axllent/mailpit > /dev/null
+          for i in $(seq 30); do curl -sf http://localhost:8025/api/v1/messages > /dev/null && break; sleep 1; done
+          curl -sf http://localhost:8025/api/v1/messages > /dev/null || { docker logs mailpit | tail -20; exit 1; }
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Instalar dependencias reales
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r backend/requirements.txt pip-audit
+          python - <<'PY'
+          import importlib.metadata as m
+          pk = ["fastapi", "starlette", "uvicorn", "python-multipart", "pydantic", "motor", "pymongo", "bcrypt", "PyJWT", "requests"]
+          print("::notice title=Versiones instaladas::" + ", ".join(f"{p} {m.version(p)}" for p in pk))
+          PY
+      - name: Pruebas internas (funcionales, seguridad, invariantes, mutación)
+        working-directory: backend
+        run: python tests/run_all.py
+      - name: Servidor real · fase 1 (todo el recorrido por HTTP)
+        working-directory: backend
+        run: |
+          uvicorn server:app --port 8001 > /tmp/uvicorn.log 2>&1 &
+          echo $! > /tmp/uvicorn.pid
+          for i in $(seq 60); do curl -sf http://localhost:8001/api/ > /dev/null && break; sleep 1; done
+          python tests/e2e_real.py http://localhost:8001 --si
+      - name: Servidor real · fase 2 (después de reiniciar)
+        working-directory: backend
+        run: |
+          kill "$(cat /tmp/uvicorn.pid)"; sleep 3
+          uvicorn server:app --port 8001 >> /tmp/uvicorn.log 2>&1 &
+          for i in $(seq 60); do curl -sf http://localhost:8001/api/ > /dev/null && break; sleep 1; done
+          python tests/e2e_real.py http://localhost:8001 --si --fase 2
+      - name: Registro del servidor si algo falla
+        if: failure()
+        run: |
+          tail -n 120 /tmp/uvicorn.log || true
+          msg=$(grep -m4 -E "Error|Traceback|Exception" /tmp/uvicorn.log | tr '\n' ' ' | cut -c1-900)
+          [ -n "$msg" ] && echo "::error title=Registro del servidor::$msg" || true
+      - name: Vulnerabilidades conocidas en las dependencias (pip-audit)
+        run: |
+          pip-audit -r backend/requirements.txt --format json --output /tmp/audit.json || true
+          python - <<'PY'
+          import json, sys
+          data = json.load(open("/tmp/audit.json"))
+          deps = data.get("dependencies", [])
+          vulns = [(d["name"], d.get("version"), v) for d in deps for v in d.get("vulns", [])]
+          for name, ver, v in vulns[:10]:
+              fix = ", ".join(v.get("fix_versions") or []) or "sin versión corregida"
+              print(f"::error title=Vulnerabilidad en {name} {ver}::{v['id']} {' '.join(v.get('aliases', []))} · corregida en {fix}")
+          if vulns:
+              sys.exit(1)
+          print(f"::notice title=pip-audit::0 vulnerabilidades conocidas en {len(deps)} paquetes (dependencias incluidas)")
+          PY
+
+  despliegue:
+    name: Imagen de despliegue + navegador real
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    env:
+      MAILPIT_URL: http://localhost:8025
+      E2E_LINK_BASE: http://localhost:8080
+    steps:
+      - uses: actions/checkout@v5
+      - name: MongoDB 8 (la misma versión que el plan gratis de Atlas)
+        # Los runners de GitHub usan Linux 6.19+, incompatible con el TCMalloc de MongoDB 8 (SERVER-121912).
+        # Solución conocida: dejar que glibc gestione rseq. Si aun así no arranca, se prueba MongoDB 7.
+        run: |
+          arrancar() {
+            docker rm -f mongo > /dev/null 2>&1 || true
+            docker run -d --name mongo -p 27017:27017 -e GLIBC_TUNABLES=glibc.pthread.rseq=1 "$1" > /dev/null
+            for i in $(seq 45); do docker exec mongo mongosh --quiet --eval 'db.runCommand({ping:1}).ok' 2>/dev/null | grep -q 1 && return 0; sleep 2; done
+            return 1
+          }
+          if arrancar mongo:8; then imagen=mongo:8
+          elif arrancar mongo:7; then imagen=mongo:7
+          else
+            docker logs mongo 2>&1 | tail -40
+            echo "::error title=MongoDB no arranca::$(docker logs mongo 2>&1 | tail -6 | tr '\n' ' ' | cut -c1-800)"
+            exit 1
+          fi
+          echo "::notice title=MongoDB::$imagen, versión $(docker exec mongo mongosh --quiet --eval 'db.version()')"
+      - name: Servidor de correo de pruebas (Mailpit)
+        run: |
+          docker run -d --name mailpit -p 1025:1025 -p 8025:8025 axllent/mailpit > /dev/null
+          for i in $(seq 30); do curl -sf http://localhost:8025/api/v1/messages > /dev/null && break; sleep 1; done
+          curl -sf http://localhost:8025/api/v1/messages > /dev/null || { docker logs mailpit | tail -20; exit 1; }
+      - name: Construir la imagen (frontend + API)
+        run: docker build -t tpv-demo .
+      - name: Arrancar como en producción (HTTPS off solo porque es localhost)
+        run: |
+          cat > /tmp/arrancar.sh <<'SH'
+          docker rm -f tpv > /dev/null 2>&1 || true
+          docker run -d --name tpv --network host \
+            -e MONGO_URL=mongodb://localhost:27017 -e DB_NAME=tpv_produccion_e2e -e JWT_SECRET="$JWT" \
+            -e PORT=8080 -e FRONTEND_URL=http://localhost:8080 \
+            -e SMTP_HOST=localhost -e SMTP_PORT=1025 -e SMTP_SECURITY=none -e EMAIL_FROM=tpv@weedlemon.test \
+            -e ADMIN_EMAIL=admin@weedlemon.es -e ADMIN_PASSWORD=admin123 tpv-demo
+          for i in $(seq 60); do curl -sf http://localhost:8080/api/ > /dev/null && break; sleep 1; done
+          curl -sf http://localhost:8080/api/ > /dev/null || { docker logs tpv | tail -60; exit 1; }
+          SH
+          JWT="$(python3 -c 'import secrets; print(secrets.token_urlsafe(48))')"
+          echo "JWT=$JWT" >> "$GITHUB_ENV"
+          JWT="$JWT" bash /tmp/arrancar.sh
+      - name: La app y la API salen del mismo servidor
+        run: |
+          curl -sf http://localhost:8080/ | grep -q '<div id="root">'
+          curl -sf http://localhost:8080/tpv | grep -q '<div id="root">'
+          test "$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8080/api/no-existe)" = 404
+          if curl -s --path-as-is 'http://localhost:8080/static/../../backend/server.py' | grep -q 'from fastapi'; then echo "::error::se puede leer el código del servidor"; exit 1; fi
+          if curl -sf http://localhost:8080/ | grep -qiE 'googleapis|posthog|emergent'; then echo "::error::la página carga recursos de terceros"; exit 1; fi
+          echo "::notice title=Imagen de despliegue::frontend y API servidos juntos desde un solo contenedor"
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Herramientas de prueba
+        run: |
+          pip install requests playwright
+          python -m playwright install --with-deps chromium
+      - name: Servidor en modo producción · fase 1
+        run: python backend/tests/e2e_real.py http://localhost:8080 --si
+      - name: Contenedor nuevo con la misma base de datos · fase 2 (los archivos viven en MongoDB)
+        run: |
+          JWT="$JWT" bash /tmp/arrancar.sh
+          python backend/tests/e2e_real.py http://localhost:8080 --si --fase 2
+      - name: Navegador real (Chromium)
+        run: python backend/tests/ui_smoke.py http://localhost:8080
+      - name: Registro del contenedor si algo falla
+        if: failure()
+        run: |
+          docker logs tpv 2>&1 | tail -n 120 || true
+          msg=$(docker logs tpv 2>&1 | grep -m4 -E "Error|Traceback|Exception" | tr '\n' ' ' | cut -c1-900)
+          [ -n "$msg" ] && echo "::error title=Registro del contenedor::$msg" || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: captura-navegador
+          path: tpv-navegador.png
+          if-no-files-found: ignore
+
+  frontend:
+    name: Dependencias del frontend (informativo)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "20"
+      - name: npm audit de lo que llega al navegador
+        working-directory: frontend
+        run: |
+          npm install --package-lock-only --ignore-scripts --legacy-peer-deps > /dev/null 2>&1
+          npm audit --omit=dev --json > /tmp/npm-audit.json || true
+          node -e '
+            const a = require("/tmp/npm-audit.json"); const m = (a.metadata || {}).vulnerabilities || {};
+            const v = Object.values(a.vulnerabilities || {});
+            const top = v.filter(x => ["high","critical"].includes(x.severity)).map(x => x.name).slice(0, 12).join(", ");
+            console.log(`::notice title=npm audit (informativo)::críticas ${m.critical||0}, altas ${m.high||0}, medias ${m.moderate||0}, bajas ${m.low||0}. Altas/críticas: ${top || "ninguna"}`);
+          '
