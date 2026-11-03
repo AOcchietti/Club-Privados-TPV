@@ -92,6 +92,12 @@ Frontend copiado tal cual de la preview de Emergent; backend reconstruido a part
 - Arreglado `GET /auth/me` (error 500 desde el código original: al recargar la página se perdía la sesión), detectado por la prueba contra el servidor real.
 - GitHub Actions (`.github/workflows/pruebas.yml`) con MongoDB 8 real: pruebas internas, `tests/e2e_real.py` por HTTP antes y después de reiniciar, imagen Docker en modo producción con contenedor nuevo, navegador real (`tests/ui_smoke.py`), `pip-audit` y `npm audit`.
 
+## Implementado (03/11/2026, iteración 11 · versión 1.0.0)
+- Recuperación de contraseña por email para el equipo: «¿Has olvidado tu contraseña?» en el acceso (`/recuperar`) y página para elegir la nueva (`/restablecer`). Respuesta idéntica exista o no la cuenta, enlace de un solo uso que caduca en 30 minutos (solo se guarda su hash), como mucho 3 correos por hora y cuenta, límite por conexión, enlace construido con `FRONTEND_URL` (nunca con la cabecera Host), aviso por correo del cambio y cierre de todas las sesiones (`pw_version` en los tokens; también cuando un admin cambia la contraseña de otra persona).
+- Envío de correo por la API HTTPS de Brevo (`BREVO_API_KEY`, sirve en el plan gratis de Render, que bloquea SMTP) o por SMTP (`SMTP_*`). Sin configurar, en local el correo sale en la consola.
+- Versión 1.0.0: `CHANGELOG.md`, `APP_VERSION` en `GET /api/`, etiqueta `v1.0.0` y release en GitHub. Render publica `main`.
+- Pruebas: recorrido de recuperación con correos reales en GitHub (Mailpit), también desde el navegador; 4 mutaciones nuevas.
+
 ## Backlog priorizado
 - P0: nada bloqueante pendiente.
 - P1: impresión/exportación de tickets y cierres (PDF/Z-report); límites de dispensación por socio/día (normativa CSC); caducidad de membresía con avisos; vista de socios con deuda (filtro en lista de socios).

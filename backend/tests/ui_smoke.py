@@ -8,8 +8,10 @@ Comprueba también que la app no pide nada a terceros (ni Google Fonts ni analí
 import os
 import re
 import sys
+import time
 from urllib.parse import urlparse
 
+import requests
 from playwright.sync_api import sync_playwright
 
 GHA = os.environ.get("GITHUB_ACTIONS") == "true"
@@ -33,6 +35,38 @@ def main(base):
         hosts, errors = set(), []
         page.on("request", lambda r: hosts.add(urlparse(r.url).hostname))
         page.on("pageerror", lambda e: errors.append(str(e)))
+
+        # Recuperación de contraseña desde las pantallas (con Mailpit si está disponible)
+        api = (os.environ.get("MAILPIT_URL") or "").rstrip("/")
+        antes = {m["ID"] for m in (requests.get(f"{api}/api/v1/messages", timeout=10).json().get("messages") or [])} if api else set()
+        page.goto(base + "/login")
+        page.click('[data-testid="login-forgot-link"]')
+        page.fill('[data-testid="forgot-email-input"]', "cajero@weedlemon.es")
+        page.click('[data-testid="forgot-submit-button"]')
+        page.wait_for_selector('[data-testid="forgot-sent"]', timeout=10000)
+        check(True, "pedir el enlace desde «¿Has olvidado tu contraseña?»")
+        if api:
+            link = None
+            for _ in range(40):
+                for m in requests.get(f"{api}/api/v1/messages", timeout=10).json().get("messages") or []:
+                    if m["ID"] not in antes and "Cambia tu contraseña" in m.get("Subject", ""):
+                        texto = requests.get(f"{api}/api/v1/message/{m['ID']}", timeout=10).json().get("Text", "")
+                        found = re.search(r"/restablecer\?token=[\w-]+", texto)
+                        link = found.group(0) if found else None
+                        if link:  # el más reciente (Mailpit los devuelve de nuevo a viejo)
+                            break
+                if link:
+                    break
+                time.sleep(1)
+            check(link is not None, "llega el correo con el enlace")
+            page.goto(base + link)
+            page.wait_for_selector('[data-testid="reset-password-input"]', timeout=10000)
+            check("token=" not in page.url, "el token desaparece de la barra de direcciones")
+            page.fill('[data-testid="reset-password-input"]', "clave-navegador-123")
+            page.fill('[data-testid="reset-password-repeat"]', "clave-navegador-123")
+            page.click('[data-testid="reset-submit-button"]')
+            page.wait_for_selector('[data-testid="reset-done"]', timeout=10000)
+            check(True, "contraseña cambiada desde el enlace del correo")
 
         page.goto(base + "/login")
         page.fill('[data-testid="login-email-input"]', os.environ.get("E2E_ADMIN_EMAIL", "admin@weedlemon.es"))
@@ -78,4 +112,4 @@ if __name__ == "__main__":
         sys.exit(1)
     print(f"\nOK · navegador: {n} comprobaciones")
     if GHA:
-        print(f"::notice title=Navegador real::{n} comprobaciones correctas (login, TPV, Caja, Gestión, sin terceros)")
+        print(f"::notice title=Navegador real::{n} comprobaciones correctas (recuperar contraseña, login, TPV, Caja, Gestión, sin terceros)")

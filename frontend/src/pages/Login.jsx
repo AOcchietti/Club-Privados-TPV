@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import { motion } from "framer-motion";
 import { useAuth } from "@/context/AuthContext";
 import { apiError } from "@/lib/api";
@@ -125,6 +125,11 @@ export default function Login() {
                 placeholder="••••••••"
                 className="w-full px-4 py-3 rounded-xl border border-slate-300 bg-white text-slate-900 focus:outline-none focus:ring-2 focus:ring-amber-400 focus:border-amber-400 transition-shadow"
               />
+              <div className="text-right mt-1.5">
+                <Link to="/recuperar" className="text-xs font-semibold text-slate-500 hover:text-amber-700" data-testid="login-forgot-link">
+                  ¿Has olvidado tu contraseña?
+                </Link>
+              </div>
             </div>
             {error && (
               <p className="text-sm text-red-600 bg-red-50 border border-red-200 rounded-xl px-3.5 py-2.5" data-testid="login-error">

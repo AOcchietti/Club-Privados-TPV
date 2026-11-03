@@ -8,7 +8,7 @@ Rama `demo` · 31/10/2026
 - **El más grave**: al quinto intento de contraseña fallido, el login daba un error interno, y lo seguía dando para siempre para esa persona desde esa conexión. Venía del código original.
 - **Datos personales**: la aplicación enviaba grabaciones de pantalla a un servicio de analítica de Emergent, incluido el formulario de alta. Se ha eliminado.
 - **Pruebas automáticas**: cuatro bloques en `backend/tests` que hacen **más de 3,8 millones de comprobaciones** y pasan todas. Se repiten con `python tests/run_all.py`.
-- **Las propias pruebas están verificadas**: se metieron **20 errores a propósito** en copias del servidor y las pruebas detectaron los 20.
+- **Las propias pruebas están verificadas**: se metieron **24 errores a propósito** en copias del servidor y las pruebas detectaron los 24.
 - **Servidor real**: GitHub repite las pruebas en cada push con FastAPI, bcrypt y **MongoDB 8 reales**, recorre la app por HTTP, arranca la imagen de despliegue, abre la app en un navegador y busca vulnerabilidades en las dependencias. Resultado a 31/10/2026: todo en verde, `pip-audit` y `npm audit` (lo que llega al navegador) sin vulnerabilidades. Esta prueba encontró además el fallo n.º 27, que venía del código original.
 
 ## Alcance y método
@@ -32,7 +32,7 @@ Cada riesgo se ha clasificado según la **tríada CIA**:
    - Mapa automático de quién puede llamar a cada una, obtenido del propio código.
    - Búsqueda de patrones peligrosos: ejecución de código, consultas sin escapar, secretos escritos en el repositorio.
 2. **Pruebas funcionales de punta a punta** (`test_flows.py`, 234 comprobaciones). Recorren los procesos reales en orden: productos, inventario, ventas y recargas con y sin turno, apertura, recuento, cierre, PDF (incluidos los umbrales de descuadre), catálogo de refrescos y dulces, cantidades enteras en productos por unidades, subcategorías, botón de rellenar todo el recuento, alta pública con QR, usuarios y migración de datos antiguos.
-3. **Pruebas de seguridad por la tríada CIA** (`test_security.py`, 162 comprobaciones).
+3. **Pruebas de seguridad por la tríada CIA** (`test_security.py`, 202 comprobaciones).
    - **Confidencialidad**:
      - Control de acceso de las 52 rutas.
      - Tokens manipulados: caducados, firmados con otra clave, de otro tipo, con algoritmo "none", con rol falsificado.
@@ -65,8 +65,8 @@ Cada riesgo se ha clasificado según la **tríada CIA**:
      - El efectivo esperado nunca es negativo.
      - Los productos por unidades (latas, chocolatinas…) nunca tienen stock ni ventas con decimales.
 5. **Pruebas de mutación** (`test_mutations.py`). Comprueban que las pruebas sirven:
-   - Se introducen 20 errores típicos en copias del servidor. Por ejemplo: "la venta no descuenta el saldo", "sin protección CSRF", "se aceptan SVG" o "el PDF trata igual los productos caros y los baratos".
-   - Las pruebas deben fallar con cada uno, y detectaron **20 de 20**.
+   - Se introducen 24 errores típicos en copias del servidor. Por ejemplo: "la venta no descuenta el saldo", "sin protección CSRF", "se aceptan SVG" o "el PDF trata igual los productos caros y los baratos".
+   - Las pruebas deben fallar con cada uno, y detectaron **24 de 24**.
    - Gracias a esto se encontró y cerró un hueco de las propias pruebas: no comprobaban mermas que se comieran stock ya vendido fuera de turno.
 6. **Pruebas de interfaz**:
    - Compilación completa del frontend.
@@ -110,6 +110,16 @@ Cada riesgo se ha clasificado según la **tríada CIA**:
 | 25 | Las tipografías se cargaban de **Google Fonts**: Google recibía la IP de quien abría el TPV o el formulario de alta. | C | Baja | Corregido: alojadas en la propia app |
 | 26 | Cada instalación del frontend descargaba paquetes de `assets.emergent.sh` (herramientas de la preview). | I | Baja | Corregido: eliminados |
 | 27 | `GET /api/auth/me` daba **error interno** siempre: al recargar la página la app no reconocía la sesión y mandaba al login. Venía del código original; lo encontró la prueba contra el servidor real. | A | Media | Corregido y con prueba |
+
+### Recuperación de contraseña (versión 1.0.0)
+
+Controles con prueba automática:
+- La respuesta es idéntica exista o no la cuenta: no sirve para averiguar qué emails son del equipo.
+- Enlace aleatorio de 256 bits, de un solo uso (también con dos peticiones a la vez) y que caduca en 30 minutos. En la base de datos solo se guarda su hash.
+- Pedir un enlace nuevo anula el anterior. Como mucho 3 correos por hora a la misma cuenta, y límite de peticiones por conexión.
+- El enlace se construye con `FRONTEND_URL`, nunca con la cabecera `Host` de la petición (evita que un atacante haga que el correo apunte a su web).
+- Al cambiarla se cierran **todas** las sesiones de esa persona y se le avisa por correo. Lo mismo si un admin cambia la contraseña de otra persona.
+- Cuentas suspendidas o pendientes no reciben enlaces. El token se borra de la barra de direcciones al abrir la página.
 
 ### Lo que ya estaba bien
 

@@ -8,6 +8,7 @@ A · Disponibilidad: el servicio aguanta abusos (fuerza bruta, subidas enormes, 
 import ast
 import asyncio
 import os
+import re
 import time
 
 import jwt
@@ -19,7 +20,7 @@ CHK = Checker("seguridad")
 check = CHK
 err = CHK.error
 
-PUBLIC = {("POST", "/auth/login"), ("POST", "/auth/refresh"), ("POST", "/auth/logout"), ("POST", "/public/upload"), ("POST", "/public/alta"),
+PUBLIC = {("POST", "/auth/login"), ("POST", "/auth/refresh"), ("POST", "/auth/logout"), ("POST", "/auth/forgot-password"), ("POST", "/auth/reset-password"), ("POST", "/public/upload"), ("POST", "/public/alta"),
           ("GET", "/public/legal"), ("GET", "/public/legal.pdf"), ("GET", "/alta/qr.png"), ("GET", "/")}
 ADMIN_ONLY = {("DELETE", "/users/{user_id}"), ("POST", "/settings/legal-pdf"), ("POST", "/cash/opening/cancel"),
               ("POST", "/cash/closing/cancel"), ("GET", "/cash/sessions"), ("GET", "/cash/sessions/{session_id}"),
@@ -150,6 +151,116 @@ async def main():
     res = S.Response()
     await S.login(S.LoginIn(email="cajero@weedlemon.es", password="cajero123"), S.Request(ip="8.8.4.4"), res)
     check((await S.get_current_user(req(res.cookies["access_token"])))["email"] == "cajero@weedlemon.es", "volver a entrar funciona")
+
+    # Recuperación de contraseña por email
+    enviados = []
+
+    async def fake_send(to, subject, text, html=None):
+        enviados.append({"to": to, "subject": subject, "text": text, "html": html})
+        return True
+    real_send = S.send_email
+    S.send_email = fake_send
+    try:
+        async def pedir(email, ip="5.5.5.5", headers=None):
+            out = await S.forgot_password(S.ForgotPasswordIn(email=email), S.Request(ip=ip, headers=headers or {}))
+            await asyncio.gather(*list(S.BACKGROUND_TASKS))
+            return out
+        r_nadie = await pedir("nadie@weedlemon.es")
+        r_socio = await pedir("lucia@example.com")
+        check(not enviados, "a un email que no es del equipo no se le envía nada")
+        res_login = S.Response()
+        await S.login(S.LoginIn(email="cajero@weedlemon.es", password="cajero123"), S.Request(ip="5.5.5.6"), res_login)
+        sesion_vieja = res_login.cookies["access_token"]
+        r_cajero = await pedir(" Cajero@WeedLemon.es ", headers={"host": "web-del-atacante.example"})
+        check(r_nadie == r_socio == r_cajero, "la respuesta es idéntica exista o no la cuenta (no revela emails)")
+        check(len(enviados) == 1 and enviados[0]["to"] == "cajero@weedlemon.es", "se envía el enlace al email de la cuenta")
+        link = re.search(r"(https?://\S+/restablecer\?token=)([\w-]+)", enviados[0]["text"])
+        check(link and link.group(1).startswith(S.public_app_url()), "el enlace usa la dirección configurada, nunca la cabecera Host")
+        tok = link.group(2)
+        check(tok in (enviados[0]["html"] or ""), "el correo HTML lleva el mismo enlace")
+        rec = await db.password_resets.find_one({"used_at": None})
+        check(rec["token_hash"] != tok and len(tok) >= 40, "solo se guarda el hash del token, que es largo y aleatorio")
+        await err(S.reset_password(S.ResetPasswordIn(token=tok, password="corta"), S.Request(ip="5.5.5.7")), 400, "8 caracteres")
+        await err(S.reset_password(S.ResetPasswordIn(token="inventado", password="nueva-clave-123"), S.Request(ip="5.5.5.7")), 400, "no es válido")
+        await S.reset_password(S.ResetPasswordIn(token=tok, password="nueva-clave-123"), S.Request(ip="5.5.5.7"))
+        await asyncio.gather(*list(S.BACKGROUND_TASKS))
+        check(any("se ha cambiado" in m["subject"] for m in enviados), "se avisa por correo del cambio")
+        await err(S.reset_password(S.ResetPasswordIn(token=tok, password="otra-clave-456"), S.Request(ip="5.5.5.7")), 400, "no es válido")
+        check(True, "el enlace solo sirve una vez")
+        await err(S.get_current_user(req(sesion_vieja)), 401, "contraseña ha cambiado")
+        await err(S.login(S.LoginIn(email="cajero@weedlemon.es", password="cajero123"), S.Request(ip="5.5.5.8"), S.Response()), 401)
+        ok_res = S.Response()
+        await S.login(S.LoginIn(email="cajero@weedlemon.es", password="nueva-clave-123"), S.Request(ip="5.5.5.8"), ok_res)
+        check((await S.get_current_user(req(ok_res.cookies["access_token"])))["email"] == "cajero@weedlemon.es", "se entra con la contraseña nueva")
+        # Caducidad, enlaces anteriores y límite de correos
+        enviados.clear()
+        await pedir("cajero@weedlemon.es", ip="5.5.6.1")
+        tok1 = re.search(r"token=([\w-]+)", enviados[-1]["text"]).group(1)
+        await pedir("cajero@weedlemon.es", ip="5.5.6.2")
+        tok2 = re.search(r"token=([\w-]+)", enviados[-1]["text"]).group(1)
+        await err(S.reset_password(S.ResetPasswordIn(token=tok1, password="clave-larga-789"), S.Request(ip="5.5.6.3")), 400, "no es válido")
+        check(True, "pedir un enlace nuevo anula el anterior")
+        await db.password_resets.update_one({"token_hash": S.reset_token_hash(tok2)}, {"$set": {"expires_at": S.now_utc() - S.timedelta(minutes=1)}})
+        await err(S.reset_password(S.ResetPasswordIn(token=tok2, password="clave-larga-789"), S.Request(ip="5.5.6.3")), 400, "caducado")
+        check(True, "un enlace caducado no sirve")
+        antes = len(enviados)
+        for i in range(3):
+            await pedir("cajero@weedlemon.es", ip=f"5.5.7.{i}")
+        check(len(enviados) == antes, f"como mucho {S.RESET_MAX_PER_HOUR} correos por hora a la misma cuenta")
+        for i in range(10):
+            await pedir(f"x{i}@weedlemon.es", ip="5.5.9.9")
+        await err(pedir("x@weedlemon.es", ip="5.5.9.9"), 429)
+        check(True, "límite de peticiones por conexión")
+        await S.update_user(pepe["id"], S.UserUpdate(status="suspendida"), user=admin)
+        antes = len(enviados)
+        await pedir("pepe@x.es", ip="5.5.8.1")
+        check(len(enviados) == antes, "una cuenta suspendida no recibe enlaces")
+        # Un admin que cambia la contraseña de otra persona cierra sus sesiones
+        res_c = S.Response()
+        await S.login(S.LoginIn(email="cajero@weedlemon.es", password="nueva-clave-123"), S.Request(ip="5.5.8.2"), res_c)
+        await S.update_user(cajero["id"], S.UserUpdate(password="cajero123"), user=admin)
+        await err(S.get_current_user(req(res_c.cookies["access_token"])), 401, "contraseña ha cambiado")
+        await err(S.refresh(S.Request(cookies={"refresh_token": res_c.cookies["refresh_token"]}), S.Response()), 401, "contraseña ha cambiado")
+        check(True, "si un admin cambia la contraseña de alguien, sus sesiones abiertas caducan")
+    finally:
+        S.send_email = real_send
+
+    # Envío real del correo: proveedor según la configuración
+    sent = {}
+
+    class FakeSMTP:
+        def __init__(self, host, port, timeout=None, context=None):
+            sent.update(host=host, port=port)
+        def __enter__(self):
+            return self
+        def __exit__(self, *a):
+            return False
+        def starttls(self, context=None):
+            sent["tls"] = True
+        def login(self, u, p):
+            sent["login"] = u
+        def send_message(self, msg):
+            sent["msg"] = msg
+    real_smtp, real_post = S.smtplib.SMTP, S.requests.post
+    S.smtplib.SMTP = FakeSMTP
+    os.environ.update(SMTP_HOST="smtp.ejemplo.es", SMTP_USER="tpv@ejemplo.es", SMTP_PASSWORD="x", EMAIL_FROM="tpv@ejemplo.es")
+    try:
+        check(S.email_provider() == "smtp" and await S.send_email("a@b.es", "Prueba", "hola", "<p>hola</p>"), "envío por SMTP")
+        check(sent["port"] == 587 and sent.get("tls") and sent["login"] == "tpv@ejemplo.es" and sent["msg"]["To"] == "a@b.es",
+              "SMTP con STARTTLS, usuario y destinatario correctos")
+        llamadas = []
+        S.requests.post = lambda url, **kw: (llamadas.append((url, kw)), type("R", (), {"status_code": 201, "text": ""})())[1]
+        os.environ["BREVO_API_KEY"] = "clave-brevo"
+        check(S.email_provider() == "brevo" and await S.send_email("a@b.es", "Prueba", "hola"), "envío por la API de Brevo")
+        url, kw = llamadas[0]
+        check(url.startswith("https://api.brevo.com/") and kw["headers"]["api-key"] == "clave-brevo" and kw["json"]["to"] == [{"email": "a@b.es"}],
+              "Brevo por HTTPS (sirve aunque el hosting bloquee SMTP)")
+        S.requests.post = lambda url, **kw: type("R", (), {"status_code": 401, "text": "bad key"})()
+        check(await S.send_email("a@b.es", "Prueba", "hola") is False, "si el proveedor falla, la petición no se rompe")
+    finally:
+        S.smtplib.SMTP, S.requests.post = real_smtp, real_post
+        for k in ("SMTP_HOST", "SMTP_USER", "SMTP_PASSWORD", "EMAIL_FROM", "BREVO_API_KEY"):
+            os.environ.pop(k, None)
 
     # bcrypt 5 da error con contraseñas de más de 72 bytes: se rechazan al crearlas y el login nunca falla por ello
     await err(S.create_user(S.UserCreate(name="Larga", role="cajero", email="larga@x.es", password="ñ" * 40), user=admin), 400, "72")

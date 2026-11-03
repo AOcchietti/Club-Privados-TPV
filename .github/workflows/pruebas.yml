@@ -5,6 +5,7 @@ name: Pruebas
 on:
   push:
     branches: [main, demo, V02]
+    tags: ["v*"]
   pull_request:
   workflow_dispatch:
 
@@ -24,6 +25,13 @@ jobs:
       FRONTEND_URL: http://localhost:3000
       ADMIN_EMAIL: admin@weedlemon.es
       ADMIN_PASSWORD: admin123
+      # Correo: Mailpit recoge los emails (recuperación de contraseña) para que la prueba los lea
+      SMTP_HOST: localhost
+      SMTP_PORT: "1025"
+      SMTP_SECURITY: none
+      EMAIL_FROM: tpv@weedlemon.test
+      MAILPIT_URL: http://localhost:8025
+      E2E_LINK_BASE: http://localhost:3000
     steps:
       - uses: actions/checkout@v5
       - name: MongoDB 8 (la misma versión que el plan gratis de Atlas)
@@ -44,6 +52,11 @@ jobs:
             exit 1
           fi
           echo "::notice title=MongoDB::$imagen, versión $(docker exec mongo mongosh --quiet --eval 'db.version()')"
+      - name: Servidor de correo de pruebas (Mailpit)
+        run: |
+          docker run -d --name mailpit -p 1025:1025 -p 8025:8025 axllent/mailpit > /dev/null
+          for i in $(seq 30); do curl -sf http://localhost:8025/api/v1/messages > /dev/null && break; sleep 1; done
+          curl -sf http://localhost:8025/api/v1/messages > /dev/null || { docker logs mailpit | tail -20; exit 1; }
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
@@ -99,6 +112,9 @@ jobs:
     name: Imagen de despliegue + navegador real
     runs-on: ubuntu-24.04
     timeout-minutes: 35
+    env:
+      MAILPIT_URL: http://localhost:8025
+      E2E_LINK_BASE: http://localhost:8080
     steps:
       - uses: actions/checkout@v5
       - name: MongoDB 8 (la misma versión que el plan gratis de Atlas)
@@ -119,6 +135,11 @@ jobs:
             exit 1
           fi
           echo "::notice title=MongoDB::$imagen, versión $(docker exec mongo mongosh --quiet --eval 'db.version()')"
+      - name: Servidor de correo de pruebas (Mailpit)
+        run: |
+          docker run -d --name mailpit -p 1025:1025 -p 8025:8025 axllent/mailpit > /dev/null
+          for i in $(seq 30); do curl -sf http://localhost:8025/api/v1/messages > /dev/null && break; sleep 1; done
+          curl -sf http://localhost:8025/api/v1/messages > /dev/null || { docker logs mailpit | tail -20; exit 1; }
       - name: Construir la imagen (frontend + API)
         run: docker build -t tpv-demo .
       - name: Arrancar como en producción (HTTPS off solo porque es localhost)
@@ -128,6 +149,7 @@ jobs:
           docker run -d --name tpv --network host \
             -e MONGO_URL=mongodb://localhost:27017 -e DB_NAME=tpv_produccion_e2e -e JWT_SECRET="$JWT" \
             -e PORT=8080 -e FRONTEND_URL=http://localhost:8080 \
+            -e SMTP_HOST=localhost -e SMTP_PORT=1025 -e SMTP_SECURITY=none -e EMAIL_FROM=tpv@weedlemon.test \
             -e ADMIN_EMAIL=admin@weedlemon.es -e ADMIN_PASSWORD=admin123 tpv-demo
           for i in $(seq 60); do curl -sf http://localhost:8080/api/ > /dev/null && break; sleep 1; done
           curl -sf http://localhost:8080/api/ > /dev/null || { docker logs tpv | tail -60; exit 1; }

@@ -1,6 +1,12 @@
 from dotenv import load_dotenv
 import asyncio
+import hashlib
+import secrets
+import smtplib
+import ssl
 from contextlib import asynccontextmanager
+from email.message import EmailMessage
+from email.utils import formataddr, make_msgid
 load_dotenv()
 
 import io
@@ -44,6 +50,7 @@ async def lifespan(_app):
 app = FastAPI(lifespan=lifespan)
 api_router = APIRouter(prefix="/api")
 
+APP_VERSION = "1.0.0"
 JWT_ALGORITHM = "HS256"
 MADRID = ZoneInfo("Europe/Madrid")
 STAFF_ROLES = ["admin", "cajero"]
@@ -81,14 +88,15 @@ def verify_password(plain: str, hashed: str) -> bool:
         return False
 
 
-def create_access_token(user_id: str, email: str, role: str) -> str:
-    payload = {"sub": user_id, "email": email, "role": role, "type": "access", "jti": uuid.uuid4().hex,
+# "pwv" = versión de la contraseña: al restablecerla (o si un admin la cambia) sube y todas las sesiones anteriores caducan.
+def create_access_token(user_id: str, email: str, role: str, pwv: int = 0) -> str:
+    payload = {"sub": user_id, "email": email, "role": role, "type": "access", "jti": uuid.uuid4().hex, "pwv": pwv,
                "exp": datetime.now(timezone.utc) + timedelta(minutes=60 * 8)}
     return jwt.encode(payload, os.environ["JWT_SECRET"], algorithm=JWT_ALGORITHM)
 
 
-def create_refresh_token(user_id: str) -> str:
-    payload = {"sub": user_id, "type": "refresh", "jti": uuid.uuid4().hex,
+def create_refresh_token(user_id: str, pwv: int = 0) -> str:
+    payload = {"sub": user_id, "type": "refresh", "jti": uuid.uuid4().hex, "pwv": pwv,
                "exp": datetime.now(timezone.utc) + timedelta(days=7)}
     return jwt.encode(payload, os.environ["JWT_SECRET"], algorithm=JWT_ALGORITHM)
 
@@ -179,6 +187,8 @@ async def get_current_user(request: Request) -> dict:
         # aunque todavía tenga un token sin caducar.
         if user.get("role") not in STAFF_ROLES or user.get("status") in ("suspendida", "pendiente"):
             raise HTTPException(status_code=401, detail="Cuenta sin acceso")
+        if payload.get("pwv", 0) != user.get("pw_version", 0):
+            raise HTTPException(status_code=401, detail="La contraseña ha cambiado: vuelve a entrar")
         user["id"] = str(user.pop("_id"))
         return user
     except jwt.ExpiredSignatureError:
@@ -345,6 +355,105 @@ async def get_object(path: str):
     return await asyncio.to_thread(_emergent_get, path)
 
 
+# ---------- correo ----------
+# Proveedor según las variables de entorno (el primero que esté configurado):
+#   BREVO_API_KEY → API HTTPS de Brevo (funciona aunque el hosting bloquee SMTP, como el plan gratis de Render)
+#   SMTP_HOST     → cualquier servidor SMTP (Gmail con contraseña de aplicación, el correo de tu dominio…)
+#   ninguno       → en local el correo se muestra en la consola del backend; en producción se avisa del error
+# Remitente: EMAIL_FROM (dirección) y EMAIL_FROM_NAME.
+BACKGROUND_TASKS = set()
+
+
+def run_in_background(coro):
+    """Lanza una tarea sin esperarla (la respuesta no tarda más si hay que enviar un correo)."""
+    task = asyncio.get_running_loop().create_task(coro)
+    BACKGROUND_TASKS.add(task)
+    task.add_done_callback(BACKGROUND_TASKS.discard)
+    return task
+
+
+def email_provider() -> Optional[str]:
+    if (os.environ.get("BREVO_API_KEY") or "").strip():
+        return "brevo"
+    if (os.environ.get("SMTP_HOST") or "").strip():
+        return "smtp"
+    return None
+
+
+def email_sender():
+    address = (os.environ.get("EMAIL_FROM") or os.environ.get("SMTP_USER") or "no-reply@localhost").strip()
+    return (os.environ.get("EMAIL_FROM_NAME") or "Weed Lemon Social Club").strip(), address
+
+
+def _send_smtp(to: str, subject: str, text: str, html: Optional[str]):
+    name, address = email_sender()
+    msg = EmailMessage()
+    msg["Subject"] = subject
+    msg["From"] = formataddr((name, address))
+    msg["To"] = to
+    msg["Message-ID"] = make_msgid(domain=address.split("@")[-1] or None)
+    msg.set_content(text)
+    if html:
+        msg.add_alternative(html, subtype="html")
+    host = os.environ["SMTP_HOST"].strip()
+    port = int(os.environ.get("SMTP_PORT") or 587)
+    security = (os.environ.get("SMTP_SECURITY") or ("ssl" if port == 465 else "starttls")).strip().lower()
+    context = ssl.create_default_context()
+    server = smtplib.SMTP_SSL(host, port, timeout=20, context=context) if security == "ssl" else smtplib.SMTP(host, port, timeout=20)
+    with server:
+        if security == "starttls":
+            server.starttls(context=context)
+        if os.environ.get("SMTP_USER"):
+            server.login(os.environ["SMTP_USER"], os.environ.get("SMTP_PASSWORD", ""))
+        server.send_message(msg)
+
+
+def _send_brevo(to: str, subject: str, text: str, html: Optional[str]):
+    name, address = email_sender()
+    resp = requests.post("https://api.brevo.com/v3/smtp/email", timeout=20,
+                         headers={"api-key": os.environ["BREVO_API_KEY"].strip(), "content-type": "application/json", "accept": "application/json"},
+                         json={"sender": {"name": name, "email": address}, "to": [{"email": to}], "subject": subject,
+                               "textContent": text, "htmlContent": html or f"<pre>{text}</pre>"})
+    if resp.status_code >= 300:
+        raise RuntimeError(f"Brevo respondió {resp.status_code}: {resp.text[:200]}")
+
+
+async def send_email(to: str, subject: str, text: str, html: Optional[str] = None) -> bool:
+    provider = email_provider()
+    if not provider:
+        if COOKIE_SECURE:
+            logger.error("Correo sin configurar (BREVO_API_KEY o SMTP_HOST): no se ha enviado «%s» a %s", subject, to)
+        else:  # en local: se ve en la consola para poder probar sin servidor de correo
+            logger.warning("Correo sin configurar; en local se muestra aquí.\nPara: %s\nAsunto: %s\n%s", to, subject, text)
+        return False
+    try:
+        await asyncio.to_thread(_send_brevo if provider == "brevo" else _send_smtp, to, subject, text, html)
+        logger.info("Correo «%s» enviado a %s (%s)", subject, to, provider)
+        return True
+    except Exception as e:  # noqa: BLE001 — un fallo de correo nunca rompe la petición
+        logger.error("No se pudo enviar «%s» a %s por %s: %s", subject, to, provider, e)
+        return False
+
+
+def public_app_url() -> str:
+    """Dirección pública de la app para los enlaces de los correos. Sale de la configuración, nunca de la petición
+    (si se usara la cabecera Host, alguien podría hacer que el enlace apuntara a su web)."""
+    return (os.environ.get("FRONTEND_URL") or "http://localhost:3000").strip().rstrip("/")
+
+
+def _email_html(title: str, paragraphs: List[str], button: Optional[tuple] = None) -> str:
+    import html as _h
+    body = "".join(f"<p style='margin:0 0 14px'>{_h.escape(p)}</p>" for p in paragraphs)
+    if button:
+        label, url = button
+        body += (f"<p style='margin:22px 0'><a href='{_h.escape(url)}' style='background:#facc15;color:#0f172a;padding:12px 20px;"
+                 f"border-radius:10px;text-decoration:none;font-weight:700'>{_h.escape(label)}</a></p>"
+                 f"<p style='margin:0 0 14px;font-size:12px;color:#64748b'>Si el botón no funciona, copia este enlace:<br>{_h.escape(url)}</p>")
+    return (f"<div style='font-family:Arial,sans-serif;max-width:520px;margin:auto;color:#0f172a'>"
+            f"<p style='font-size:12px;font-weight:700;letter-spacing:.08em;color:#a16207'>WEED LEMON SOCIAL CLUB</p>"
+            f"<h2 style='margin:0 0 16px'>{_h.escape(title)}</h2>{body}</div>")
+
+
 # ---------- schemas ----------
 
 class LoginIn(BaseModel):
@@ -499,8 +608,8 @@ async def login(body: LoginIn, request: Request, response: Response):
     if user.get("status") == "pendiente":
         raise HTTPException(status_code=403, detail="Cuenta pendiente de activación")
     await db.login_attempts.delete_one({"identifier": identifier})
-    access = create_access_token(str(user["_id"]), email, user["role"])
-    refresh = create_refresh_token(str(user["_id"]))
+    access = create_access_token(str(user["_id"]), email, user["role"], user.get("pw_version", 0))
+    refresh = create_refresh_token(str(user["_id"]), user.get("pw_version", 0))
     set_auth_cookies(response, access, refresh)
     out = ser(user)  # el token solo viaja en la cookie httpOnly: no queda al alcance de JavaScript
     await log_activity(out, "login", f"{out['name']} inició sesión")
@@ -564,8 +673,101 @@ async def refresh(request: Request, response: Response):
         user = None
     if not user or user.get("role") not in STAFF_ROLES or user.get("status") in ("suspendida", "pendiente"):
         raise HTTPException(status_code=401, detail="Cuenta sin acceso")
-    access = create_access_token(str(user["_id"]), user["email"], user["role"])
+    if payload.get("pwv", 0) != user.get("pw_version", 0):
+        raise HTTPException(status_code=401, detail="La contraseña ha cambiado: vuelve a entrar")
+    access = create_access_token(str(user["_id"]), user["email"], user["role"], user.get("pw_version", 0))
     set_access_cookie(response, access)
+    return {"ok": True}
+
+
+# ---------- recuperación de contraseña ----------
+# 1) /auth/forgot-password: siempre responde lo mismo (no revela si el email existe). Si es una cuenta del equipo,
+#    crea un enlace de un solo uso que caduca en 30 minutos y lo envía por correo. Solo se guarda el hash del token.
+# 2) /auth/reset-password: con ese token se pone una contraseña nueva; todas las sesiones anteriores caducan
+#    y se avisa por correo del cambio.
+RESET_MINUTES = 30
+RESET_MAX_PER_HOUR = 3
+RESET_INVALID = "El enlace no es válido o ha caducado. Pide uno nuevo desde «¿Has olvidado tu contraseña?»."
+FORGOT_RESPONSE = {"ok": True, "message": "Si ese email es de una cuenta del equipo, te hemos enviado un enlace para cambiar la "
+                                          f"contraseña. Caduca en {RESET_MINUTES} minutos; revisa también la carpeta de spam."}
+
+
+class ForgotPasswordIn(BaseModel):
+    email: str
+
+
+class ResetPasswordIn(BaseModel):
+    token: str
+    password: str
+
+
+def reset_token_hash(token: str) -> str:
+    return hashlib.sha256((token or "").encode("utf-8")).hexdigest()
+
+
+async def send_reset_email(user: dict, link: str):
+    name = (user.get("name") or "").split(" ")[0] or "hola"
+    text = (f"Hola {name}:\n\nAlguien (seguramente tú) ha pedido cambiar la contraseña de tu cuenta del TPV.\n\n"
+            f"Abre este enlace para elegir una nueva. Caduca en {RESET_MINUTES} minutos y solo sirve una vez:\n{link}\n\n"
+            "Si no lo has pedido tú, ignora este correo: tu contraseña no cambia.")
+    html = _email_html("Cambia tu contraseña", [
+        f"Hola {name}:", "Alguien (seguramente tú) ha pedido cambiar la contraseña de tu cuenta del TPV.",
+        f"El enlace caduca en {RESET_MINUTES} minutos y solo sirve una vez."], ("Elegir contraseña nueva", link))
+    html += "<p style='font-family:Arial,sans-serif;max-width:520px;margin:auto;font-size:12px;color:#64748b'>Si no lo has pedido tú, ignora este correo: tu contraseña no cambia.</p>"
+    await send_email(user["email"], "Cambia tu contraseña del TPV", text, html)
+
+
+async def send_password_changed_email(user: dict):
+    text = ("Hola:\n\nLa contraseña de tu cuenta del TPV se acaba de cambiar y se han cerrado las sesiones abiertas.\n\n"
+            "Si no has sido tú, avisa cuanto antes a un administrador del club.")
+    await send_email(user["email"], "Tu contraseña del TPV se ha cambiado", text,
+                     _email_html("Contraseña cambiada", ["La contraseña de tu cuenta del TPV se acaba de cambiar y se han cerrado las sesiones abiertas.",
+                                                         "Si no has sido tú, avisa cuanto antes a un administrador del club."]))
+
+
+@api_router.post("/auth/forgot-password")
+async def forgot_password(body: ForgotPasswordIn, request: Request):
+    await rate_limit(request, "forgot_password", limit=10)
+    email = (body.email or "").strip().lower()
+    if not email or len(email) > 254:
+        return FORGOT_RESPONSE
+    user = await db.users.find_one({"email": email})
+    if not user or user.get("role") not in STAFF_ROLES or user.get("status") in ("suspendida", "pendiente"):
+        return FORGOT_RESPONSE
+    uid = str(user["_id"])
+    recent = await db.password_resets.count_documents({"user_id": uid, "created_at": {"$gte": now_utc() - timedelta(hours=1)}})
+    if recent >= RESET_MAX_PER_HOUR:  # nadie puede llenar el buzón de otra persona
+        return FORGOT_RESPONSE
+    await db.password_resets.update_many({"user_id": uid, "used_at": None}, {"$set": {"used_at": now_utc(), "superseded": True}})
+    token = secrets.token_urlsafe(32)
+    await db.password_resets.insert_one({"user_id": uid, "token_hash": reset_token_hash(token), "created_at": now_utc(),
+                                         "expires_at": now_utc() + timedelta(minutes=RESET_MINUTES), "used_at": None,
+                                         "ip": client_ip(request)})
+    run_in_background(send_reset_email(user, f"{public_app_url()}/restablecer?token={token}"))
+    await log_activity(ser(user), "password_reset_pedido", f"Enlace para cambiar la contraseña enviado a {email}")
+    return FORGOT_RESPONSE
+
+
+@api_router.post("/auth/reset-password")
+async def reset_password(body: ResetPasswordIn, request: Request):
+    await rate_limit(request, "reset_password", limit=20)
+    rec = await db.password_resets.find_one({"token_hash": reset_token_hash(body.token), "used_at": None})
+    if not rec or as_aware(rec["expires_at"]) <= now_utc():
+        raise HTTPException(status_code=400, detail=RESET_INVALID)
+    check_password(body.password)
+    user = await db.users.find_one({"_id": oid(rec["user_id"])})
+    if not user or user.get("role") not in STAFF_ROLES or user.get("status") in ("suspendida", "pendiente"):
+        raise HTTPException(status_code=400, detail=RESET_INVALID)
+    # Un solo uso, también si llegan dos peticiones a la vez con el mismo enlace
+    res = await db.password_resets.update_one({"_id": rec["_id"], "used_at": None}, {"$set": {"used_at": now_utc()}})
+    if res.modified_count == 0:
+        raise HTTPException(status_code=400, detail=RESET_INVALID)
+    await db.users.update_one({"_id": user["_id"]}, {"$set": {"password_hash": hash_password(body.password)},
+                                                     "$inc": {"pw_version": 1}})  # cierra todas las sesiones anteriores
+    await db.password_resets.update_many({"user_id": rec["user_id"], "used_at": None}, {"$set": {"used_at": now_utc()}})
+    await db.login_attempts.delete_many({"identifier": {"$regex": re.escape(":" + user["email"]) + "$"}})
+    await log_activity(ser(user), "password_restablecida", f"{user['name']} cambió su contraseña con el enlace del correo")
+    run_in_background(send_password_changed_email(user))
     return {"ok": True}
 
 
@@ -691,7 +893,10 @@ async def update_user(user_id: str, body: UserUpdate, user: dict = Depends(requi
             updates["password_hash"] = hash_password(data["password"])
     if not updates:
         return ser(target)
-    await db.users.update_one({"_id": ObjectId(user_id)}, {"$set": updates})
+    change = {"$set": updates}
+    if "password_hash" in updates and str(target["_id"]) != user["id"]:
+        change["$inc"] = {"pw_version": 1}  # sus sesiones abiertas dejan de valer
+    await db.users.update_one({"_id": ObjectId(user_id)}, change)
     await log_activity(user, "usuario_editado", f"Editado «{target['name']}»: {', '.join(updates.keys())}")
     return ser(await db.users.find_one({"_id": ObjectId(user_id)}))
 
@@ -1953,7 +2158,7 @@ async def activity(limit: int = 100, user: dict = Depends(require_admin)):
 
 @api_router.get("/")
 async def root():
-    return {"message": "Weed Lemon Social Club POS API"}
+    return {"message": "Weed Lemon Social Club POS API", "version": APP_VERSION}
 
 
 # ---------- seed ----------
@@ -2098,6 +2303,12 @@ async def startup():
     except Exception as e:  # p. ej. dos turnos activos heredados: se avisa y se sigue arrancando
         logger.error("No se pudo crear el índice de turno único: %s", e)
 
+    await db.password_resets.create_index("token_hash")
+    await db.password_resets.create_index([("user_id", 1), ("created_at", -1)])
+    await db.password_resets.create_index("expires_at", expireAfterSeconds=86400)  # se borran un día después de caducar
+    if not email_provider():
+        (logger.error if COOKIE_SECURE else logger.info)(
+            "Correo sin configurar: la recuperación de contraseña no enviará emails (configura BREVO_API_KEY o SMTP_HOST)")
     await db.revoked_tokens.create_index("jti")
     await db.revoked_tokens.create_index("expires_at", expireAfterSeconds=0)  # MongoDB los borra al caducar
     if STORAGE_MODE == "mongo":

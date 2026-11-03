@@ -238,6 +238,11 @@ class Collection:
                 return Result(deleted_count=1)
         return Result(deleted_count=0)
 
+    async def delete_many(self, q):
+        before = len(self.docs)
+        self.docs[:] = [d for d in self.docs if not match(d, q)]
+        return Result(deleted_count=before - len(self.docs))
+
     async def find_one_and_update(self, q, upd, upsert=False, return_document=False):
         for d in self.docs:
             if match(d, q):

@@ -10,7 +10,9 @@ ESCRIBE DATOS (productos, ventas, turnos…): úsala con una base de datos de pr
     python tests/e2e_real.py http://localhost:8001 --si --fase 2   # fase 2: después de reiniciar el servidor
 
 Credenciales del admin: E2E_ADMIN_EMAIL / E2E_ADMIN_PASSWORD (por defecto las de ejemplo).
+Con MAILPIT_URL (servidor de correo de pruebas) también recorre la recuperación de contraseña por email.
 """
+import re
 import concurrent.futures as cf
 import json
 import os
@@ -79,6 +81,54 @@ def check(cond, msg):
         raise Fallo(msg)
     checks += 1
     print(f"  ✔ {msg}")
+
+
+def correo(direccion, asunto, despues_de=()):
+    """Espera en Mailpit un correo nuevo para esa dirección y devuelve su texto."""
+    api = os.environ["MAILPIT_URL"].rstrip("/")
+    for _ in range(40):
+        msgs = requests.get(f"{api}/api/v1/messages", timeout=10).json().get("messages") or []
+        for m in msgs:
+            if m["ID"] not in despues_de and asunto in m.get("Subject", "") and any(t.get("Address") == direccion for t in m.get("To") or []):
+                return requests.get(f"{api}/api/v1/message/{m['ID']}", timeout=10).json()
+        time.sleep(1)
+    raise Fallo(f"no llegó el correo «{asunto}» a {direccion}")
+
+
+def ids_correo():
+    api = os.environ["MAILPIT_URL"].rstrip("/")
+    return {m["ID"] for m in (requests.get(f"{api}/api/v1/messages", timeout=10).json().get("messages") or [])}
+
+
+def recuperacion(base):
+    print("Recuperación de contraseña por email")
+    c = Cliente(base)
+    r = c.post("/api/auth/login", json={"email": "cajero@weedlemon.es", "password": "cajero123"})
+    if r.status_code != 200:
+        print("  · se omite: el cajero de ejemplo no tiene la contraseña de ejemplo en esta base de datos")
+        return
+    vieja = dict(c.cookies)
+    previos = ids_correo() if os.environ.get("MAILPIT_URL") else set()
+    a = c.ok("POST", "/api/auth/forgot-password", json={"email": f"nadie-{uuid.uuid4().hex[:6]}@e2e.test"})
+    b = c.ok("POST", "/api/auth/forgot-password", json={"email": "Cajero@WeedLemon.es"})
+    check(a == b and a["ok"], "misma respuesta exista o no la cuenta")
+    if not os.environ.get("MAILPIT_URL"):
+        print("  · sin MAILPIT_URL: se omite la parte del correo")
+        return
+    msg = correo("cajero@weedlemon.es", "Cambia tu contraseña", previos)
+    m = re.search(r"(\S+)/restablecer\?token=([\w-]+)", msg.get("Text", ""))
+    check(m is not None and m.group(2) in msg.get("HTML", ""), "llega el correo con el enlace (texto y HTML)")
+    if os.environ.get("E2E_LINK_BASE"):
+        check(m.group(1) == os.environ["E2E_LINK_BASE"].rstrip("/"), "el enlace apunta a la dirección configurada de la app")
+    tok = m.group(2)
+    check(c.post("/api/auth/reset-password", json={"token": tok, "password": "corta"}).status_code == 400, "contraseña corta rechazada")
+    c.ok("POST", "/api/auth/reset-password", json={"token": tok, "password": "nueva-clave-e2e-123"})
+    check(c.post("/api/auth/reset-password", json={"token": tok, "password": "otra-clave-e2e-456"}).status_code == 400, "el enlace solo sirve una vez")
+    check(c.get("/api/auth/me", cookies=vieja).status_code == 401, "las sesiones abiertas antes del cambio se cierran")
+    check(Cliente(base).post("/api/auth/login", json={"email": "cajero@weedlemon.es", "password": "nueva-clave-e2e-123"}).status_code == 200,
+          "se entra con la contraseña nueva")
+    correo("cajero@weedlemon.es", "se ha cambiado", previos)
+    check(True, "llega el aviso de contraseña cambiada")
 
 
 def login(base):
@@ -188,6 +238,8 @@ def fase1(base):
         "face_photo": fotos[1], "signature": fotos[2], "legal_accepted": True})
     check(set(alta) == {"name", "member_number"}, "el formulario público solo devuelve nombre y nº de socio")
     check(pub.get(f"/api/files/{fotos[0]}").status_code == 401, "las fotos del DNI no se pueden ver sin sesión")
+
+    recuperacion(base)
 
     productos = c.ok("GET", "/api/products")
     json.dump({"foto": up["path"], "madre": madre["key"], "sub": sub["key"], "productos": len(productos)}, open(STATE, "w"))

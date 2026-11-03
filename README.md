@@ -73,6 +73,11 @@ las pruebas anteriores, un recorrido completo por HTTP contra el servidor (`test
 la imagen Docker de despliegue con un navegador real (`tests/ui_smoke.py`) y la búsqueda de vulnerabilidades (`pip-audit`, `npm audit`).
 El resultado sale junto a cada commit (✔ / ✘) y en la pestaña *Actions*.
 
+## Versiones
+
+El historial de versiones está en [`CHANGELOG.md`](CHANGELOG.md). Cada versión publicada tiene su etiqueta (`v1.0.0`…) y su
+*release* en GitHub; `main` es la versión estable y el desarrollo sigue en otras ramas hasta que se fusiona con un pull request.
+
 ## Publicar en un servidor
 
 Un solo servicio con el `Dockerfile` (app + API) y MongoDB Atlas. Paso a paso con Render: [`docs/DESPLIEGUE.md`](docs/DESPLIEGUE.md).
@@ -85,6 +90,7 @@ Un solo servicio con el `Dockerfile` (app + API) y MongoDB Atlas. Paso a paso co
   Si tenías un entorno virtual de antes, actualízalo: `pip install -U -r requirements.txt`.
 - Para empezar con la base de datos vacía, cambia `DB_NAME` en `backend/.env` (o borra la base desde MongoDB Compass).
   Los datos de ejemplo (cajero, productos y socios) solo se crean en el primer arranque de una base vacía.
-- ¿Contraseña del administrador olvidada? Arranca una vez el backend con `ADMIN_RESET_PASSWORD=true` en `backend/.env`:
-  vuelve a poner la de `ADMIN_PASSWORD`. Después quita esa línea.
+- ¿Contraseña olvidada? En el acceso, «¿Has olvidado tu contraseña?» envía un enlace por correo (configúralo en `backend/.env`:
+  Brevo o SMTP, ver [`docs/DESPLIEGUE.md`](docs/DESPLIEGUE.md)). Sin correo configurado, en local el enlace sale en la consola del backend.
+  Último recurso para el administrador: arranca una vez el backend con `ADMIN_RESET_PASSWORD=true` (vuelve a poner la de `ADMIN_PASSWORD`) y quita esa línea.
 - Las tipografías se instalan con `yarn install` (paquetes `@fontsource`): la app ya no las pide a Google Fonts.
