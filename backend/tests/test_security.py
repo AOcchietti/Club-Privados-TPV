@@ -243,6 +243,8 @@ async def main():
             sent["msg"] = msg
     real_smtp, real_post = S.smtplib.SMTP, S.requests.post
     S.smtplib.SMTP = FakeSMTP
+    claves = ("SMTP_HOST", "SMTP_PORT", "SMTP_SECURITY", "SMTP_USER", "SMTP_PASSWORD", "EMAIL_FROM", "BREVO_API_KEY")
+    entorno_previo = {k: os.environ.pop(k) for k in claves if k in os.environ}  # independiente de la máquina (en GitHub hay Mailpit)
     os.environ.update(SMTP_HOST="smtp.ejemplo.es", SMTP_USER="tpv@ejemplo.es", SMTP_PASSWORD="x", EMAIL_FROM="tpv@ejemplo.es")
     try:
         check(S.email_provider() == "smtp" and await S.send_email("a@b.es", "Prueba", "hola", "<p>hola</p>"), "envío por SMTP")
@@ -259,8 +261,9 @@ async def main():
         check(await S.send_email("a@b.es", "Prueba", "hola") is False, "si el proveedor falla, la petición no se rompe")
     finally:
         S.smtplib.SMTP, S.requests.post = real_smtp, real_post
-        for k in ("SMTP_HOST", "SMTP_USER", "SMTP_PASSWORD", "EMAIL_FROM", "BREVO_API_KEY"):
+        for k in claves:
             os.environ.pop(k, None)
+        os.environ.update(entorno_previo)
 
     # bcrypt 5 da error con contraseñas de más de 72 bytes: se rechazan al crearlas y el login nunca falla por ello
     await err(S.create_user(S.UserCreate(name="Larga", role="cajero", email="larga@x.es", password="ñ" * 40), user=admin), 400, "72")

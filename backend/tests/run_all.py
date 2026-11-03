@@ -30,5 +30,8 @@ for title, script in SUITES:
         print("   " + l)
     if not ok:
         print("\n".join("   " + l for l in res.stderr.strip().splitlines()[-8:]))
+        if os.environ.get("GITHUB_ACTIONS") == "true":  # que el motivo se vea en el resumen de GitHub
+            last = (res.stderr.strip().splitlines() or ["sin detalle"])[-1]
+            print(f"::error title={title}::{last[:900]}")
 print("\nTodo correcto." if not failed else f"\n{failed} bloque(s) con fallos.")
 sys.exit(1 if failed else 0)
